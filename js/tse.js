@@ -111,6 +111,13 @@ export async function fetchSecoesExterior(ele) {
   return Object.fromEntries((zz?.mu ?? []).map(m => [m.cd, m.zon.flatMap(z => z.sec.filter(s => !s.nsp).map(s => [z.cd, s.ns]))]));
 }
 
+// "25/10/2026" + "01:51:38", no horário de Brasília (sem horário de verão desde 2019) → ms UTC.
+function horaDoTse(data, hora) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(data ?? '');
+  const t = m && /^\d{2}:\d{2}:\d{2}$/.test(hora ?? '') ? Date.parse(`${m[3]}-${m[2]}-${m[1]}T${hora}-03:00`) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
 // Boletim de urna de uma seção: o "aux" diz se já foi publicado e onde está o arquivo.
 // Devolve null enquanto a seção não tiver boletim.
 export async function fetchBoletimSecao(ele, s) {
@@ -124,7 +131,7 @@ export async function fetchBoletimSecao(ele, s) {
   const arq = valido?.arq?.find(a => a.tp === 'bu');
   if (!arq) return null;
   const bin = await pedir(`${dir}/${valido.hash}/${arq.nm}`, { binario: true, opcional: true });
-  return bin ? lerBoletim(bin, ele) : null;
+  return bin ? { ...lerBoletim(bin, ele), recebidoEm: horaDoTse(valido.dr, valido.hr) } : null;
 }
 
 export function fotoUrl(ele, sqcand) {

@@ -590,10 +590,71 @@ async function umCiclo() {
 }
 
 setInterval(() => { if (proximaEm) renderStatus(); }, 1000);
+setInterval(() => renderTicker(), 30_000); // tira da faixa o que passou de 10 minutos
+
+/* ---------------- faixa das últimas urnas ---------------- */
+
+// Boletins de urna que o TSE recebeu nos últimos 10 minutos (pelo horário de recebimento do próprio TSE),
+// das seções que a página lê boletim: exterior e presídios. Sem nenhum, a faixa some.
+const JANELA_FAIXA = 10 * 60_000;
+let chaveFaixa = '';
+
+function itensDaFaixa() {
+  const agora = Date.now();
+  const [a, b] = duelo();
+  if (!a) return [];
+  const presidio = id => listaPresidios?.find(sec => sec.id === id);
+  const nomeCidade = cd => dados.cidades[cd]?.nome ?? dados.munExterior?.find(m => m.cd === cd)?.nome ?? COUNTRIES[CITIES[cd]?.[0]]?.nome;
+  return Object.entries(dados.cache.itens)
+    .filter(([k, bu]) => k.startsWith('bu:') && bu?.recebidoEm && agora - bu.recebidoEm < JANELA_FAIXA && agora >= bu.recebidoEm - 60_000)
+    .map(([k, bu]) => {
+      const id = k.slice(3);
+      let icone = '';
+      let lugar;
+      let secao;
+      const ext = /^zz-(\d+)-\d+-(\d+)$/.exec(id);
+      if (ext) {
+        const pais = COUNTRIES[CITIES[ext[1]]?.[0]];
+        icone = pais ? flagEmoji(pais.iso2) : '🌎';
+        lugar = nomeCidade(ext[1]) ?? 'Exterior';
+        secao = ext[2];
+      } else {
+        const sec = presidio(id);
+        if (!sec) return null;
+        icone = sec.uf.toUpperCase();
+        lugar = nomeLocal(sec.nome);
+        secao = sec.secao;
+      }
+      return { id, quando: bu.recebidoEm, icone, lugar, secao, va: bu.votos[a.n] ?? 0, vb: bu.votos[b.n] ?? 0 };
+    })
+    .filter(Boolean)
+    .sort((x, y) => y.quando - x.quando);
+}
+
+function renderTicker() {
+  const el = $('#ticker');
+  const itens = itensDaFaixa();
+  const chave = `${state.ele}|${itens.map(i => i.id).join(',')}`;
+  if (chave === chaveFaixa) return; // mesma lista: não reinicia a animação
+  chaveFaixa = chave;
+  el.hidden = !itens.length;
+  if (!itens.length) { el.querySelector('.faixa-trilho').innerHTML = ''; return; }
+  const [a, b] = duelo();
+  const item = i => `<span class="faixa-item">
+      <span class="faixa-ic">${esc(i.icone)}</span><b>${esc(i.lugar)}</b> · seção ${esc(i.secao)} · ${horaBrasilia(i.quando, dataEleicao())}
+      <span class="faixa-voto" style="--cor:${corCand(a.n)}">${esc(a.nome)} ${fmt.format(i.va)}</span>
+      <span class="faixa-voto" style="--cor:${corCand(b.n)}">${esc(b.nome)} ${fmt.format(i.vb)}</span>
+    </span>`;
+  const lista = itens.map(item).join('');
+  // Duas cópias seguidas: a animação anda metade da largura e recomeça sem emenda.
+  el.querySelector('.faixa-trilho').innerHTML = `<div class="faixa-rolo" style="--duracao:${Math.max(25, itens.length * 7)}s">${lista}<span aria-hidden="true" class="faixa-copia">${lista}</span></div>`;
+  el.querySelector('.faixa-qtd').textContent = `${itens.length} ${itens.length > 1 ? 'urnas' : 'urna'} nos últimos 10 min`;
+}
 
 /* ---------------- render: topo e placar ---------------- */
 
 function render() {
+  renderTicker();
   renderTopo();
   renderStatus();
   renderPlacar();

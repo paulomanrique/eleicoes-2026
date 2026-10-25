@@ -437,3 +437,28 @@ h1 {
 .delta.mais { color: var(--mais); }
 .delta.menos { color: var(--menos); }
 .stats dd small.delta { margin: 0 6px 0 0; }
+
+/* ---------- faixa das últimas urnas ---------- */
+.faixa { display: flex; align-items: stretch; background: var(--ink); color: var(--bg); font-size: 13px; overflow: hidden; }
+.faixa-rotulo {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px clamp(16px, 4vw, 48px);
+  font-weight: 700; letter-spacing: .02em; text-transform: uppercase; font-size: 11.5px;
+  background: var(--ink); position: relative; z-index: 1; box-shadow: 12px 0 12px -4px var(--ink);
+}
+.faixa-qtd { font-weight: 500; text-transform: none; letter-spacing: 0; opacity: .7; font-size: 11.5px; }
+.faixa-pulso { width: 7px; height: 7px; border-radius: 50%; background: var(--cand-13); animation: pulso 1.6s ease-in-out infinite; }
+.faixa-trilho { flex: 1; min-width: 0; overflow: hidden; display: flex; align-items: center; }
+.faixa-rolo { display: inline-flex; white-space: nowrap; animation: faixa var(--duracao, 30s) linear infinite; }
+.faixa:hover .faixa-rolo { animation-play-state: paused; }
+.faixa-copia { display: inline-flex; }
+.faixa-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 28px 0 0; }
+.faixa-item b { font-weight: 600; }
+.faixa-ic { font-size: 14px; }
+.faixa-voto { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.faixa-voto::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--cor); }
+@keyframes faixa { to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) {
+  .faixa-rolo { animation: none; }
+  .faixa-copia { display: none; }
+  .faixa-trilho { overflow-x: auto; }
+}
