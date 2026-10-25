@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eleições 2026 · Presidente · Resultados por estado e país</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topo">
+    <div class="topo-titulo">
+      <p class="kicker">Eleições 2026 · Presidente</p>
+      <h1 id="titulo">Resultado do <span id="titulo-turno">2º turno</span></h1>
+    </div>
+    <div class="topo-controles">
+      <div class="segmentado" role="group" aria-label="Turno">
+        <button type="button" data-ele="6258">2º turno</button>
+        <button type="button" data-ele="6257">1º turno</button>
+      </div>
+      <p class="status" id="status" aria-live="polite"></p>
+    </div>
+  </header>
+
+  <div class="aviso" id="aviso" hidden></div>
+
+  <section class="placar" id="placar" aria-label="Resultado nacional"></section>
+
+  <main class="painel">
+    <nav class="abas" role="tablist" aria-label="Recorte">
+      <button type="button" role="tab" data-aba="estados">Estados</button>
+      <button type="button" role="tab" data-aba="exterior">Exterior <span class="abas-sub">por país</span></button>
+      <button type="button" role="tab" data-aba="presidios">Presídios <span class="abas-sub">seções especiais</span></button>
+    </nav>
+
+    <div class="corpo">
+      <div class="mapa-wrap">
+        <div class="mapa" id="mapa-estados" aria-label="Mapa do Brasil por estado"></div>
+        <div class="mapa" id="mapa-mundo" aria-label="Mapa-múndi por país" hidden></div>
+        <div class="mapa" id="mapa-presidios" aria-label="Mapa das seções em presídios e unidades de internação" hidden></div>
+        <div class="mapa-ui">
+          <div class="legenda" id="legenda"></div>
+          <div class="zoom" id="zoom-ctrl" hidden>
+            <button type="button" data-zoom="in" aria-label="Aproximar">+</button>
+            <button type="button" data-zoom="out" aria-label="Afastar">−</button>
+            <button type="button" data-zoom="reset" aria-label="Ver o mundo todo">⟲</button>
+          </div>
+        </div>
+        <div class="carregando" id="carregando" hidden><span></span></div>
+      </div>
+      <aside class="lateral" id="lateral" aria-live="polite"></aside>
+    </div>
+  </main>
+
+  <footer class="rodape">
+    Dados: <a href="https://resultados.tse.jus.br/oficial/app/index.html" target="_blank" rel="noopener">TSE · Divulgação de Resultados</a>,
+    lidos direto da API pública. O exterior é apurado por cidade com seção eleitoral e somado por país.
+    Mapas: Natural Earth (world-atlas) e malha de UFs do projeto click_that_hood.
+  </footer>
+
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+  <script src="vendor/d3.min.js"></script>
+  <script src="vendor/topojson-client.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
