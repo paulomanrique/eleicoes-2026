@@ -29,6 +29,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 const dataEleicao = () => ELEICOES[state.ele].data;
 
 // Na aba Mapa, sel = UF (estado) ou código do país; cidade = cidade do exterior; continente = recorte do exterior.
+// Na aba Brasil, sel = UF; na aba Presídios, sel = UF ou presídio.
 // multi: estados (e "zz", o exterior) somados com Ctrl/⌘ + clique; somando: o mesmo pelo clique simples (toque).
 const state = { ele: '6258', aba: 'mapa', sel: null, cidade: null, multi: [], somando: false, continente: null, ordem: null, busca: '' };
 
@@ -65,14 +66,16 @@ function lerHash() {
   state.ele = de(ELEICOES, p.get('e')) ?? state.ele;
   const aba = p.get('aba');
   if (aba === 'presidios') state.aba = 'presidios';
-  else if (['mapa', 'estados', 'exterior'].includes(aba)) state.aba = 'mapa'; // estados e exterior: links antigos
+  else if (aba === 'brasil' || aba === 'estados') state.aba = 'brasil'; // estados: links antigos
+  else if (aba === 'mapa' || aba === 'exterior') state.aba = 'mapa'; // exterior: links antigos
   const sel = p.get('sel');
   state.sel = state.aba === 'mapa' ? de(UFS, sel) ?? de(COUNTRIES, sel)
+    : state.aba === 'brasil' ? de(UFS, sel)
     : de(UFS, sel) ?? (/^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null);
-  state.cidade = de(CITIES, p.get('cidade'));
-  const ufs = (p.get('ufs') || '').split(',').filter(uf => uf === 'zz' || Object.hasOwn(UFS, uf));
+  state.cidade = state.aba === 'mapa' ? de(CITIES, p.get('cidade')) : null;
+  const ufs = (p.get('ufs') || '').split(',').filter(uf => (uf === 'zz' && state.aba === 'mapa') || Object.hasOwn(UFS, uf));
   state.multi = [...new Set(ufs)];
-  state.continente = de(CONTINENTES, p.get('cont'));
+  state.continente = state.aba === 'mapa' ? de(CONTINENTES, p.get('cont')) : null;
 }
 
 function gravarHash() {
@@ -680,6 +683,7 @@ function render() {
   renderPlacar();
   renderLegenda();
   pintarMundo();
+  pintarBrasil();
   pintarPresidios();
   renderLateral();
 }
@@ -689,6 +693,7 @@ function renderTopo() {
   document.querySelectorAll('[data-ele]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ele === state.ele)));
   document.querySelectorAll('[data-aba]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === state.aba)));
   $('#mapa-mundo').hidden = state.aba !== 'mapa';
+  $('#mapa-brasil').hidden = state.aba !== 'brasil';
   $('#mapa-presidios').hidden = state.aba !== 'presidios';
   $('#zoom-ctrl').hidden = false;
 }
@@ -830,7 +835,7 @@ function renderLegenda() {
   const dir = passos(b);
   const sw = cores => cores.map(c => `<span style="background:${c}"></span>`).join('');
   // Enquanto o Brasil não tem voto apurado, o mapa mostra também onde ainda se vota (8h às 17h locais).
-  const extraUrnas = state.aba !== 'mapa' || dados.br?.validos ? '' : `
+  const extraUrnas = state.aba === 'presidios' || dados.br?.validos ? '' : `
     <div class="legenda-urnas" style="margin-top:6px">
       <span><i class="urna-st e-antes"></i>ainda não abriu</span>
       <span><i class="urna-st e-votando"></i>votando agora</span>
@@ -1038,6 +1043,84 @@ async function montarMundo() {
   mundo = { svg, paths, pathsUF, marcadores, gCidades, proj, enquadrar, enquadrarEstados, enquadrarCidades, resetar, escalarMarcas, enquadrado: null };
   escalarMarcas();
   pintarMundo();
+}
+
+/* ---------------- mapa só do Brasil ---------------- */
+
+let mapaBrasil = null;
+
+async function montarBrasil() {
+  const topo = await d3.json('data/br-uf.json');
+  const fc = topojson.feature(topo, topo.objects[Object.keys(topo.objects)[0]]);
+  const W = 600, H = 560;
+  const proj = d3.geoMercator().fitExtent([[12, 12], [W - 12, H - 12]], fc);
+  const path = d3.geoPath(proj);
+  const svg = d3.select('#mapa-brasil').append('svg').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img');
+  const fundo = svg.append('rect').attr('width', W).attr('height', H).style('fill', 'var(--ocean)');
+  const g = svg.append('g');
+  const uf = f => f.properties.sigla.toLowerCase();
+  const paths = g.append('g').selectAll('path').data(fc.features).join('path')
+    .attr('class', 'regiao ativa')
+    .attr('d', path)
+    .attr('data-id', uf)
+    .on('mouseenter mousemove', (ev, f) => mostrarTooltip(ev, {
+      titulo: UFS[uf(f)], icone: `<span class="linha-ic">${uf(f).toUpperCase()}</span>`, r: dados.ufs[uf(f)], urnas: urnasBrasil(dataEleicao()),
+    }))
+    .on('mouseleave', esconderTooltip)
+    .on('click', (ev, f) => { if (somar_(ev)) alternarMulti(uf(f)); else selecionar(uf(f)); })
+    .on('contextmenu', (ev, f) => { if (ev.ctrlKey) { ev.preventDefault(); alternarMulti(uf(f)); } });
+  const rotulos = g.append('g').selectAll('text').data(fc.features).join('text')
+    .attr('class', 'rotulo-uf')
+    .attr('transform', f => `translate(${path.centroid(f)})`)
+    .text(f => f.properties.sigla);
+  const caixaUF = new Map(fc.features.map(f => [uf(f), path.bounds(f)]));
+
+  // As siglas ficam do mesmo tamanho na tela em qualquer zoom.
+  const zoom = d3.zoom().scaleExtent([1, 40]).translateExtent([[0, 0], [W, H]])
+    .on('zoom', ev => {
+      const k = ev.transform.k;
+      g.attr('transform', ev.transform);
+      rotulos.style('font-size', `${10.5 / k}px`).style('stroke-width', `${3 / k}px`);
+    });
+  svg.call(zoom).on('dblclick.zoom', null);
+  fundo.on('click', () => voltar());
+
+  document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => {
+    if (state.aba !== 'brasil') return;
+    const acao = btn.dataset.zoom;
+    if (acao === 'reset') { selecionar(null); return; }
+    svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
+  }));
+
+  // Um ou mais estados (soma), com folga em volta.
+  const enquadrarEstados = ufs => {
+    const cs = ufs.map(u => caixaUF.get(u)).filter(Boolean);
+    if (!cs.length) { resetar(); return; }
+    const [x0, y0, x1, y1] = [d3.min(cs, c => c[0][0]), d3.min(cs, c => c[0][1]), d3.max(cs, c => c[1][0]), d3.max(cs, c => c[1][1])];
+    const escala = Math.min(8, 0.7 / Math.max((x1 - x0) / W, (y1 - y0) / H));
+    svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2));
+  };
+  const resetar = () => svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity);
+  mapaBrasil = { paths, enquadrarEstados, resetar, enquadrado: null };
+  pintarBrasil();
+}
+
+function pintarBrasil() {
+  if (!mapaBrasil) return;
+  const naAba = state.aba === 'brasil';
+  const ufSel = naAba && UFS[state.sel] ? state.sel : null;
+  const multi = naAba ? state.multi.filter(u => UFS[u]) : [];
+  const urnas = urnasBrasil(dataEleicao());
+  mapaBrasil.paths
+    .style('fill', f => corRegiao(dados.ufs[f.properties.sigla.toLowerCase()], urnas))
+    .classed('sel', f => { const u = f.properties.sigla.toLowerCase(); return u === ufSel || multi.includes(u); });
+  const alvo = multi.length ? `soma:${multi.join(',')}` : ufSel ? `uf:${ufSel}` : null;
+  if (naAba && mapaBrasil.enquadrado !== alvo) {
+    mapaBrasil.enquadrado = alvo;
+    if (multi.length) mapaBrasil.enquadrarEstados(multi);
+    else if (ufSel) mapaBrasil.enquadrarEstados([ufSel]);
+    else mapaBrasil.resetar();
+  }
 }
 
 /* ---------------- mapa dos presídios ---------------- */
@@ -1340,7 +1423,7 @@ function renderLateral() {
   if (chave !== chaveLateral) { chaveLateral = chave; el.scrollTop = 0; }
   if (!dados.br) { el.innerHTML = '<p class="vazio">Carregando resultados do TSE…</p>'; return; }
   const focoBusca = document.activeElement?.id === 'busca';
-  el.innerHTML = state.aba === 'presidios' ? lateralPresidios() : lateralMapa();
+  el.innerHTML = state.aba === 'presidios' ? lateralPresidios() : state.aba === 'brasil' ? lateralBrasil() : lateralMapa();
   if (focoBusca) {
     const b = $('#busca');
     b.focus();
@@ -1355,8 +1438,16 @@ function lateralMapa() {
   return painelGeral();
 }
 
+// Aba Brasil: só os estados (e as somas deles).
+function lateralBrasil() {
+  if (state.multi.length) return painelSelecao();
+  if (state.sel && UFS[state.sel]) return painelEstado();
+  return painelGeral({ exterior: false });
+}
+
 // Visão geral: o Brasil (regiões e estados) e o exterior (continentes e países), com uma busca para os dois.
-function painelGeral() {
+// Na aba Brasil, só a parte do Brasil.
+function painelGeral({ exterior = true } = {}) {
   const termo = normalizar(state.busca);
   const acha = l => !termo || normalizar(l.nome).includes(termo);
   const estados = Object.entries(UFS).map(([uf, nome]) => ({ id: uf, tipo: 'uf', icone: uf.toUpperCase(), nome, r: dados.ufs[uf] })).filter(acha);
@@ -1366,12 +1457,16 @@ function painelGeral() {
     .map(([id, p]) => ({ id, tipo: 'pais', icone: flagEmoji(p.iso2), bandeira: true, nome: p.nome, nota: qtd[id] > 1 ? `${qtd[id]} cidades` : '', r: dados.paises[id], urnas: urnasPais(id, dataEleicao()) }))
     .filter(acha);
   const zz = dados.zz;
-  return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Clique num estado ou país, no mapa ou na lista, para ver o resultado dele; num país, aparecem as cidades com seção eleitoral.</p></div></div>
-    ${progressoHtml(dados.br)}
+  const brasil = `${progressoHtml(dados.br)}
     ${botaoSomar()}
-    <input id="busca" class="busca" type="search" placeholder="Buscar estado ou país…" value="${esc(state.busca)}" autocomplete="off">
+    <input id="busca" class="busca" type="search" placeholder="Buscar estado${exterior ? ' ou país' : ''}…" value="${esc(state.busca)}" autocomplete="off">
     ${termo ? '' : listaHtml('Por região', linhasRegioes())}
-    ${listaHtml(`Estados (${estados.length})`, estados)}
+    ${listaHtml(`Estados (${estados.length})`, estados)}`;
+  if (!exterior) {
+    return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Clique num estado, no mapa ou na lista, para ver o resultado dele.</p></div></div>${brasil}`;
+  }
+  return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Clique num estado ou país, no mapa ou na lista, para ver o resultado dele; num país, aparecem as cidades com seção eleitoral.</p></div></div>
+    ${brasil}
     <div class="lat-cab lat-secao"><span class="lat-uf">🌎</span><div><h2 class="lat-titulo">Exterior</h2><p class="lat-sub">Brasileiros votando fora do país</p></div></div>
     ${zz ? progressoHtml(zz) + (zz.validos ? candidatosHtml(zz) : '') : ''}
     ${zz && !zz.validos ? `<p class="urnas-resumo">${avisoExterior()}</p>` : ''}
@@ -1445,7 +1540,7 @@ function painelSelecao() {
   const regiao = Object.values(REGIOES).find(reg => reg.ufs.length === ids.length && reg.ufs.every(uf => ids.includes(uf)));
   const titulo = regiao ? `Região ${regiao.nome}` : `Seleção: ${estados} ${estados === 1 ? 'estado' : 'estados'}${ids.includes('zz') ? ' + exterior' : ''}`;
   // Lista completa (estados e exterior), com os da soma marcados, para seguir somando por ela.
-  const linhas = [...Object.keys(UFS), 'zz'].map(id => ({
+  const linhas = [...Object.keys(UFS), ...(state.aba === 'mapa' ? ['zz'] : [])].map(id => ({
     id, tipo: 'uf', icone: id === 'zz' ? '🌎' : id.toUpperCase(), bandeira: id === 'zz', nome: nomeRecorte(id), r: resultadoRecorte(id), marcada: ids.includes(id),
   }));
   const pctEleitorado = dados.br?.eleitorado ? (total.eleitorado / dados.br.eleitorado) * 100 : 0;
@@ -1750,19 +1845,20 @@ function trocarEleicao(ele) {
   dados.querCidades = state.aba === 'mapa';
   dados.querPresidios = state.aba === 'presidios';
   if (mundo) mundo.enquadrado = undefined;
+  if (mapaBrasil) mapaBrasil.enquadrado = undefined;
   gravarHash();
   render();
   ciclo();
 }
 
 function realcar(id, ligado) {
-  const svgSel = state.aba === 'presidios' ? '#mapa-presidios' : '#mapa-mundo';
+  const svgSel = { presidios: '#mapa-presidios', brasil: '#mapa-brasil' }[state.aba] ?? '#mapa-mundo';
   document.querySelectorAll(`${svgSel} [data-id="${CSS.escape(id)}"]`).forEach(n => n.classList.toggle('sel', ligado || n.dataset.id === state.sel || state.multi.includes(n.dataset.id)));
 }
 
 // Ctrl/⌘ + clique (ou modo soma) numa linha de estado, região ou do exterior: entra/sai da soma.
 function cliqueDeSoma(ev, t) {
-  if (state.aba !== 'mapa' || !somar_(ev)) return false;
+  if (state.aba === 'presidios' || !somar_(ev)) return false;
   const id = t.dataset.tipo === 'uf' ? t.dataset.ir : t.dataset.tipo === 'regiao' ? REGIOES[t.dataset.ir]?.ufs : null;
   if (!id) return false;
   ev.preventDefault();
@@ -1860,6 +1956,7 @@ window.addEventListener('hashchange', () => {
     return;
   }
   if (mundo) mundo.enquadrado = undefined;
+  if (mapaBrasil) mapaBrasil.enquadrado = undefined;
   render();
   ativarAba(state.aba);
 });
@@ -1873,6 +1970,6 @@ aplicarCache();
 dados.querCidades = state.aba === 'mapa';
 dados.querPresidios = state.aba === 'presidios';
 render();
-await Promise.all([montarMundo(), montarPresidios()]);
+await Promise.all([montarMundo(), montarBrasil(), montarPresidios()]);
 aplicarCache();
 ciclo();

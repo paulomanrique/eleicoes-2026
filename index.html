@@ -42,12 +42,14 @@
   <main class="painel">
     <nav class="abas" role="tablist" aria-label="Recorte">
       <button type="button" role="tab" data-aba="mapa">Mapa <span class="abas-sub">estados e países</span></button>
+      <button type="button" role="tab" data-aba="brasil">Brasil <span class="abas-sub">por estado</span></button>
       <button type="button" role="tab" data-aba="presidios">Presídios <span class="abas-sub">seções especiais</span></button>
     </nav>
 
     <div class="corpo">
       <div class="mapa-wrap">
         <div class="mapa" id="mapa-mundo" aria-label="Mapa-múndi: o Brasil por estado e os outros países"></div>
+        <div class="mapa" id="mapa-brasil" aria-label="Mapa do Brasil por estado" hidden></div>
         <div class="mapa" id="mapa-presidios" aria-label="Mapa das seções em presídios e unidades de internação" hidden></div>
         <div class="mapa-ui">
           <div class="legenda" id="legenda"></div>

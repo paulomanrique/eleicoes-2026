@@ -10,6 +10,8 @@ python3 -m http.server 8765   # depois abra http://localhost:8765
   eleitoral brasileira. Prévia ao passar o mouse e detalhe ao clicar. O TSE apura o exterior por cidade
   (186 cidades, UF `zz`); `js/exterior.js` liga cada cidade ao seu país e a página soma os resultados por
   país. Clique num país para dar zoom e ver as cidades.
+- **Brasil**: só o mapa do Brasil por estado, com as siglas, soma de estados (Ctrl/⌘ + clique) e o painel
+  só com regiões e estados.
 - **Presídios**: as seções especiais, num mapa à parte.
 - Turno na URL: `#e=6258` (2º turno) ou `#e=6257` (1º turno). Seleção também vai na URL.
 ## Consultas ao TSE (para não tomar 429)
