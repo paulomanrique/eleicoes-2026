@@ -6,10 +6,11 @@ Página estática que lê ao vivo a API pública de resultados do TSE (`resultad
 python3 -m http.server 8765   # depois abra http://localhost:8765
 ```
 
-- **Estados**: mapa do Brasil por UF, com prévia ao passar o mouse e detalhe ao clicar.
-- **Exterior**: mapa-múndi. O TSE apura o exterior por cidade (186 cidades, UF `zz`);
-  `js/exterior.js` liga cada cidade ao seu país e a página soma os resultados por país.
-  Clique num país para dar zoom e ver as cidades.
+- **Mapa**: um mapa-múndi só, com o Brasil dividido em estados e os outros países onde há seção
+  eleitoral brasileira. Prévia ao passar o mouse e detalhe ao clicar. O TSE apura o exterior por cidade
+  (186 cidades, UF `zz`); `js/exterior.js` liga cada cidade ao seu país e a página soma os resultados por
+  país. Clique num país para dar zoom e ver as cidades.
+- **Presídios**: as seções especiais, num mapa à parte.
 - Turno na URL: `#e=6258` (2º turno) ou `#e=6257` (1º turno). Seleção também vai na URL.
 ## Consultas ao TSE (para não tomar 429)
 
@@ -48,28 +49,25 @@ A API não tem total por presídio, então cada seção vem do seu boletim de ur
 de estados onde a apuração já começou, no máximo a cada 5 minutos por seção, e guarda o boletim publicado
 para sempre no cache local.
 
-## Zoom no Brasil: estado → município → zona → bairro/local
-
-- Role ou belisque o mapa da aba Estados. A partir de certo zoom, os estados à vista (até 4) abrem em
-  municípios (`data/mun/<uf>.json`, malha tbrugz/geodata-br ligada ao código TSE). Selecionar um
-  município, ou aproximar bastante, abre as zonas eleitorais e os locais de votação dele
-  (`data/locais/<uf>/<cd>.json`, do cadastro de locais do TSE).
-- **Zonas:** o TSE não publica contorno de zona. A área desenhada é aproximada: células de Voronoi dos
-  locais de votação, recortadas no município. O resultado de cada zona vem do arquivo da zona.
-- **Bairro e local:** não há total na API; somam os boletins de urna das seções, carregados quando você
-  clica (2 consultas por seção, guardados para sempre).
-- **Consultas:** antes das 17h de Brasília, só o índice de cada estado aberto (uma vez, para o eleitorado).
-  Depois, os municípios à vista entram numa fila com teto de 60 arquivos por minuto, maiores primeiro; o
-  município selecionado e as zonas dele passam na frente. A fila continua sozinha até completar.
-- Dados regenerados por `scripts/gera_dados_municipais.py` (comando no topo do script). 7 municípios
-  criados depois de 2010 não têm polígono na malha e só aparecem na lista.
-
 ## Regiões e continentes
 
-- **Regiões do Brasil** (aba Estados, painel do Brasil): Norte, Nordeste, Centro-Oeste, Sudeste e Sul.
+- **Regiões do Brasil** (visão geral do painel): Norte, Nordeste, Centro-Oeste, Sudeste e Sul.
   Clicar numa região soma os estados dela (é uma soma de estados pronta); Ctrl/⌘ + clique inclui ou
   tira a região inteira de uma soma em andamento.
-- **Continentes** (aba Exterior): América do Norte, América Central e Caribe, América do Sul, Europa,
+- **Continentes** (visão geral do painel): América do Norte, América Central e Caribe, América do Sul, Europa,
   África, Ásia e Oceania. A soma é por cidade, então Caiena e Saint-Georges (Guiana Francesa) contam na
   América do Sul. Oriente Médio, Turquia e Cáucaso estão em Ásia; Rússia e Chipre, em Europa.
 - Nenhuma das duas faz consulta nova ao TSE: são somas do que já foi carregado.
+
+## Comparar 1º e 2º turno
+
+No painel de um estado ou país, "Comparar 1º e 2º turno" abre as fichas dos dois turnos lado a lado. O turno
+na tela usa o que já foi carregado; o outro vem do cache dele e só consulta o TSE pelo que falta (um arquivo
+por estado, um por cidade do país), respeitando o relógio. O 1º turno, encerrado, vem uma vez e fica guardado.
+
+## Cidades com menos de 30 eleitores
+
+No exterior, a seção só é instalada onde há pelo menos 30 eleitores (Código Eleitoral, art. 226); no 1º turno,
+as 40 cidades abaixo disso saíram como "seção não instalada". A página lê o eleitorado de cada cidade no índice
+do TSE e trata essas cidades como "sem votação": não entram nos horários de fechamento, não seguram a espera
+por resultado e não têm boletim consultado.

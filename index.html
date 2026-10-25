@@ -7,6 +7,10 @@
   <meta name="color-scheme" content="light dark">
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="css/style.css">
+  <script>
+    // Tema escolhido no botão, aplicado antes de pintar a página (sem piscar no tema errado).
+    try { const t = localStorage.getItem('tse-tema'); if (t === 'claro' || t === 'escuro') document.documentElement.dataset.tema = t; } catch {}
+  </script>
 </head>
 <body>
   <header class="topo">
@@ -15,29 +19,28 @@
       <h1 id="titulo">Resultado do <span id="titulo-turno">2º turno</span></h1>
     </div>
     <div class="topo-controles">
-      <div class="segmentado" role="group" aria-label="Turno">
-        <button type="button" data-ele="6258">2º turno</button>
-        <button type="button" data-ele="6257">1º turno</button>
+      <div class="topo-linha">
+        <button type="button" class="tema" id="tema"></button>
+        <div class="segmentado" role="group" aria-label="Turno">
+          <button type="button" data-ele="6258">2º turno</button>
+          <button type="button" data-ele="6257">1º turno</button>
+        </div>
       </div>
       <p class="status" id="status" aria-live="polite"></p>
     </div>
   </header>
 
-  <div class="aviso" id="aviso" hidden></div>
-
   <section class="placar" id="placar" aria-label="Resultado nacional"></section>
 
   <main class="painel">
     <nav class="abas" role="tablist" aria-label="Recorte">
-      <button type="button" role="tab" data-aba="estados">Estados</button>
-      <button type="button" role="tab" data-aba="exterior">Exterior <span class="abas-sub">por país</span></button>
+      <button type="button" role="tab" data-aba="mapa">Mapa <span class="abas-sub">estados e países</span></button>
       <button type="button" role="tab" data-aba="presidios">Presídios <span class="abas-sub">seções especiais</span></button>
     </nav>
 
     <div class="corpo">
       <div class="mapa-wrap">
-        <div class="mapa" id="mapa-estados" aria-label="Mapa do Brasil por estado"></div>
-        <div class="mapa" id="mapa-mundo" aria-label="Mapa-múndi por país" hidden></div>
+        <div class="mapa" id="mapa-mundo" aria-label="Mapa-múndi: o Brasil por estado e os outros países"></div>
         <div class="mapa" id="mapa-presidios" aria-label="Mapa das seções em presídios e unidades de internação" hidden></div>
         <div class="mapa-ui">
           <div class="legenda" id="legenda"></div>
@@ -60,6 +63,7 @@
   </footer>
 
   <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+  <dialog class="comparar" id="comparar" aria-labelledby="cmp-titulo"></dialog>
 
   <script src="vendor/d3.min.js"></script>
   <script src="vendor/topojson-client.min.js"></script>

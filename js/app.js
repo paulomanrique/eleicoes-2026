@@ -5,7 +5,9 @@ import {
 } from './tse.js';
 import { Cache } from './cache.js';
 import { COUNTRIES, CITIES, CONTINENTES, flagEmoji, continenteDaCidade, continenteDoPais, nomePaisNoContinente } from './exterior.js';
-import { urnasCidade, urnasCidades, urnasPais, urnasBrasil, resumoUrnas, horaBrasilia, faltam, fechamentoBrasil } from './urnas.js';
+import {
+  urnasCidade, urnasCidades, urnasPais, urnasBrasil, resumoUrnas, horaBrasilia, faltam, fechamentoBrasil, definirSemVotacao, MINIMO_ELEITORES,
+} from './urnas.js';
 
 // O CDN do TSE guarda cada arquivo por ~52s (max-age); consultar mais rápido que isso não traz nada novo.
 const INTERVALO = 60_000;
@@ -26,10 +28,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 
 const dataEleicao = () => ELEICOES[state.ele].data;
 
-// Na aba Estados, sel = UF; abaixo dela: mun (código TSE), zona, bairro e local ("zona-local").
+// Na aba Mapa, sel = UF (estado) ou código do país; cidade = cidade do exterior; continente = recorte do exterior.
 // multi: estados (e "zz", o exterior) somados com Ctrl/⌘ + clique; somando: o mesmo pelo clique simples (toque).
-// continente: recorte do exterior por continente (aba Exterior).
-const state = { ele: '6258', aba: 'estados', sel: null, cidade: null, mun: null, zona: null, bairro: null, local: null, multi: [], somando: false, continente: null, ordem: null, busca: '' };
+const state = { ele: '6258', aba: 'mapa', sel: null, cidade: null, multi: [], somando: false, continente: null, ordem: null, busca: '' };
 
 const REGIOES = {
   norte: { sigla: 'N', nome: 'Norte', ufs: ['ac', 'ap', 'am', 'pa', 'ro', 'rr', 'to'] },
@@ -39,8 +40,9 @@ const REGIOES = {
   sul: { sigla: 'S', nome: 'Sul', ufs: ['pr', 'rs', 'sc'] },
 };
 
-// Sem ordem escolhida: no exterior, antes dos votos, a lista segue o fechamento das urnas.
-const ordemAtual = () => state.ordem ?? (state.aba === 'exterior' && dados.zz && !dados.zz.validos ? 'fechamento' : 'eleitorado');
+// Ordem das listas: a escolhida, ou a padrão de cada lista. No exterior, antes dos votos, o fechamento das urnas.
+const ordemAtual = (padrao = 'eleitorado') => state.ordem ?? padrao;
+const ordemExterior = () => (dados.zz && !dados.zz.validos ? 'fechamento' : 'eleitorado');
 
 let dados;
 function novosDados(ele) {
@@ -61,17 +63,13 @@ function lerHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const de = (obj, v) => (v != null && Object.hasOwn(obj, v) ? v : null);
   state.ele = de(ELEICOES, p.get('e')) ?? state.ele;
-  if (['estados', 'exterior', 'presidios'].includes(p.get('aba'))) state.aba = p.get('aba');
+  const aba = p.get('aba');
+  if (aba === 'presidios') state.aba = 'presidios';
+  else if (['mapa', 'estados', 'exterior'].includes(aba)) state.aba = 'mapa'; // estados e exterior: links antigos
   const sel = p.get('sel');
-  state.sel = state.aba === 'estados' ? de(UFS, sel)
-    : state.aba === 'exterior' ? de(COUNTRIES, sel)
+  state.sel = state.aba === 'mapa' ? de(UFS, sel) ?? de(COUNTRIES, sel)
     : /^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null;
   state.cidade = de(CITIES, p.get('cidade'));
-  state.mun = /^\d{5}$/.test(p.get('mun') ?? '') ? p.get('mun') : null;
-  const zona = Number(p.get('zona'));
-  state.zona = Number.isInteger(zona) && zona > 0 ? zona : null;
-  state.bairro = p.get('bairro') || null;
-  state.local = /^\d{1,4}-\d{1,5}$/.test(p.get('local') ?? '') ? p.get('local') : null;
   const ufs = (p.get('ufs') || '').split(',').filter(uf => uf === 'zz' || Object.hasOwn(UFS, uf));
   state.multi = [...new Set(ufs)];
   state.continente = de(CONTINENTES, p.get('cont'));
@@ -81,7 +79,6 @@ function gravarHash() {
   const p = new URLSearchParams({ e: state.ele, aba: state.aba });
   if (state.sel) p.set('sel', state.sel);
   if (state.cidade) p.set('cidade', state.cidade);
-  for (const k of ['mun', 'zona', 'bairro', 'local']) if (state[k] != null) p.set(k, state[k]);
   if (state.multi.length) p.set('ufs', state.multi.join(','));
   if (state.continente) p.set('cont', state.continente);
   history.replaceState(null, '', `#${p}`);
@@ -143,7 +140,14 @@ function aplicarCache() {
 // Soma de cidades que avisa quando alguma veio dos boletins de urna, e não da totalização.
 const somarCidades = rs => ({ ...somar(rs), boletins: rs.some(r => r.boletins) });
 
+// O eleitorado de cada cidade vem do índice do TSE: abaixo do mínimo, a cidade não tem votação.
+function atualizarSemVotacao(cache) {
+  const eleitorado = cd => cache.get('cfg:eleitoradoZz')?.[cd] ?? cache.get(`zz:${cd}`)?.eleitorado ?? MINIMO_ELEITORES;
+  definirSemVotacao(Object.keys(CITIES).filter(cd => eleitorado(cd) < MINIMO_ELEITORES));
+}
+
 function montarCidades() {
+  atualizarSemVotacao(dados.cache);
   if (!dados.munExterior) return;
   const cidades = {};
   const porPais = {};
@@ -219,11 +223,11 @@ function planoDeConsulta(alvo, agora = Date.now()) {
   for (const cd of Object.keys(CITIES)) {
     const u = urnasCidade(cd, d, agora);
     if (u.estado === 'fechada') fechadas.add(cd);
-    else proximo = Math.min(proximo, u.fecha);
+    else if (u.estado !== 'sem-votacao') proximo = Math.min(proximo, u.fecha);
   }
   const proximosLugares = proximo === Infinity ? [] : [
     ...(!brasilFechado && fechaBrasil === proximo ? ['Brasil'] : []),
-    ...new Set(Object.keys(CITIES).filter(cd => !fechadas.has(cd) && urnasCidade(cd, d, agora).fecha === proximo).map(cd => COUNTRIES[CITIES[cd][0]].nome)),
+    ...new Set(Object.keys(CITIES).filter(cd => !fechadas.has(cd) && urnasCidade(cd, d, agora).estado !== 'sem-votacao' && urnasCidade(cd, d, agora).fecha === proximo).map(cd => COUNTRIES[CITIES[cd][0]].nome)),
   ];
   const estadosPendentes = brasilFechado && !['br', ...Object.keys(UFS)].every(id => pronto(cache.get(id)));
   // Com o detalhe por cidade na tela, só termina quando cada cidade fechada estiver pronta,
@@ -232,11 +236,10 @@ function planoDeConsulta(alvo, agora = Date.now()) {
   const exteriorPendente = fechadas.size > 0 && (!pronto(cache.get('zz')) || (alvo.querCidades && cidadesPendentes));
   const presidiosPendentes = brasilFechado && alvo.querPresidios && !!listaPresidios
     && listaPresidios.some(sec => !cache.get(`bu:${sec.id}`));
-  const detalhePendente = brasilFechado && state.aba === 'estados' && alvo === dados && detalheIncompleto(alvo);
   return {
     brasilFechado,
     fechadas,
-    podeMudar: estadosPendentes || exteriorPendente || presidiosPendentes || detalhePendente,
+    podeMudar: estadosPendentes || exteriorPendente || presidiosPendentes,
     proximoFechamento: proximo === Infinity ? null : proximo,
     proximosLugares,
   };
@@ -271,10 +274,12 @@ async function atualizar(alvo) {
   }
   // Depois das 17h de Brasília quase tudo muda a cada minuto; aí as cidades vão a cada 3 minutos.
   const intervaloCidades = plano.brasilFechado ? INTERVALO_CIDADES : 0;
-  if (alvo === dados) await sincronizarBoletinsExterior(alvo, plano);
+  // O total nacional e os estados já chegaram: mostra antes das cargas mais lentas (cidades, boletins).
+  if (alvo === dados) { aplicarCache(); render(); }
+  // As cidades vêm antes: o índice delas dá o eleitorado, e cidade com menos de 30 eleitores não tem boletim.
   if (alvo.querCidades && alvo === dados && Date.now() - alvo.cidadesEm >= intervaloCidades) await sincronizarCidades(alvo);
+  if (alvo === dados) await sincronizarBoletinsExterior(alvo);
   if (alvo.querPresidios && alvo === dados) await sincronizarPresidios(alvo);
-  if (state.aba === 'estados' && alvo === dados) await atualizarDetalhe(alvo);
 }
 
 /* ---------------- presídios ---------------- */
@@ -315,7 +320,7 @@ function sincronizarPresidios(alvo) {
 
 // Busca o boletim de uma seção, uma vez só por vez: confere cache, tentativa em andamento e prazo
 // logo antes de pedir (dois lotes sobrepostos não pedem a mesma seção), e grava a tentativa antes da
-// requisição. Vale para presídios, bairros e locais.
+// requisição. Vale para os presídios e para as seções do exterior.
 async function buscarBoletim(alvo, sec) {
   const { cache } = alvo;
   alvo.buEmVoo ??= new Set();
@@ -412,6 +417,8 @@ function sincronizarCidades(alvo) {
     if (zz && (!completas || reabrir || (esperando && (cache.get('cfg:versaoCidades') !== zz.versao || indiceVelho)))) {
       const indice = await fetchIndice(ele, 'zz');
       cache.set('cfg:indiceCidadesEm', Date.now());
+      cache.set('cfg:eleitoradoZz', Object.fromEntries([...indice].map(([cd, ix]) => [cd, ix.eleitorado])));
+      atualizarSemVotacao(cache);
       if (alvo !== dados) return;
       const baixar = [];
       for (const cd of ids) {
@@ -450,11 +457,20 @@ function sincronizarCidades(alvo) {
 // a urna fecha e transmite. Enquanto a totalização do exterior não começa, a página soma esses boletins.
 const TETO_BU_EXTERIOR = 60; // seções por ciclo (2 consultas cada)
 
-async function sincronizarBoletinsExterior(alvo, plano) {
+async function sincronizarBoletinsExterior(alvo) {
   const { ele, cache } = alvo;
+  let plano = planoDeConsulta(alvo);
   const zz = cache.get('zz');
   if (!plano.fechadas.size || !zz || zz.secoesTot > 0) return;
   if (!cache.get('cfg:secoesZz')) cache.set('cfg:secoesZz', await fetchSecoesExterior(ele));
+  // Sem o eleitorado das cidades (aba Presídios, que não carrega as cidades), não dá para saber quais têm
+  // menos de 30 eleitores: o índice das cidades vem uma vez só para isso (o eleitorado não muda).
+  if (!cache.get('cfg:eleitoradoZz')) {
+    const indice = await fetchIndice(ele, 'zz');
+    cache.set('cfg:eleitoradoZz', Object.fromEntries([...indice].map(([cd, ix]) => [cd, ix.eleitorado])));
+    atualizarSemVotacao(cache);
+    plano = planoDeConsulta(alvo);
+  }
   if (alvo !== dados) return;
   const d = ELEICOES[ele].data;
   const agora = Date.now();
@@ -469,14 +485,27 @@ async function sincronizarBoletinsExterior(alvo, plano) {
   await baixarArquivos(alvo, pendentes, sec => buscarBoletim(alvo, sec));
 }
 
+// Soma os boletins de urna já carregados das seções; seção sem boletim entra zerada.
+function resultadoSecoes(secoes, cache = dados.cache, modelo = dados.br) {
+  if (!modelo) return null;
+  const vazio = {
+    versao: '', cands: modelo.cands.map(c => ({ ...c, votos: 0, pct: 0 })), eleitorado: 0, comparecimento: 0,
+    abstencao: 0, validos: 0, brancos: 0, nulos: 0, secoes: 1, secoesTot: 0, andamento: 'n', totalizado: '',
+  };
+  return somar(secoes.map(sec => {
+    const bu = cache.get(`bu:${sec.id}`);
+    return bu ? resultadoBoletim(bu, modelo) : vazio;
+  }));
+}
+
 const secoesExterior = (cd, cache = dados.cache) => (cache.get('cfg:secoesZz')?.[cd] ?? [])
   .map(([zona, secao]) => ({ uf: 'zz', mun: cd, zona, secao, id: `zz-${cd}-${zona}-${secao}` }));
 
 // Soma dos boletins já publicados das cidades; null enquanto nenhum chegou.
-function boletinsExterior(cds) {
-  const secoes = cds.flatMap(cd => secoesExterior(cd));
-  if (!dados.br || !secoes.some(sec => dados.cache.get(`bu:${sec.id}`))) return null;
-  return { ...resultadoSecoes(secoes), versao: 'bu', andamento: 'p', boletins: true };
+function boletinsExterior(cds, cache = dados.cache, modelo = dados.br) {
+  const secoes = cds.flatMap(cd => secoesExterior(cd, cache));
+  if (!modelo || !secoes.some(sec => cache.get(`bu:${sec.id}`))) return null;
+  return { ...resultadoSecoes(secoes, cache, modelo), versao: 'bu', andamento: 'p', boletins: true };
 }
 
 // Fica com o que tiver mais seções: a totalização do TSE ou a soma dos boletins. O eleitorado vem do
@@ -521,7 +550,7 @@ async function ciclo() {
   }
 }
 
-// Ligou um detalhe (cidades do exterior, presídios): o plano muda, então reavalia já, sem esperar o timer
+// Ligou uma carga (cidades do exterior, presídios): o plano muda, então reavalia já, sem esperar o timer
 // (que pode nem existir, se a apuração já tinha terminado).
 function reavaliar() {
   clearTimeout(timer);
@@ -562,15 +591,13 @@ async function umCiclo() {
 
 setInterval(() => { if (proximaEm) renderStatus(); }, 1000);
 
-/* ---------------- render: topo, aviso, placar ---------------- */
+/* ---------------- render: topo e placar ---------------- */
 
 function render() {
   renderTopo();
   renderStatus();
-  renderAviso();
   renderPlacar();
   renderLegenda();
-  pintarEstados();
   pintarMundo();
   pintarPresidios();
   renderLateral();
@@ -580,8 +607,7 @@ function renderTopo() {
   $('#titulo-turno').textContent = ELEICOES[state.ele].nome;
   document.querySelectorAll('[data-ele]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ele === state.ele)));
   document.querySelectorAll('[data-aba]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === state.aba)));
-  $('#mapa-estados').hidden = state.aba !== 'estados';
-  $('#mapa-mundo').hidden = state.aba !== 'exterior';
+  $('#mapa-mundo').hidden = state.aba !== 'mapa';
   $('#mapa-presidios').hidden = state.aba !== 'presidios';
   $('#zoom-ctrl').hidden = false;
 }
@@ -608,18 +634,6 @@ function renderStatus() {
   }
 }
 
-function renderAviso() {
-  const el = $('#aviso');
-  const semVotos = dados.br && !dados.br.secoesTot;
-  if (state.ele === '6258' && semVotos) {
-    el.hidden = false;
-    el.innerHTML = `<span>${avisoExterior()}<br>O TSE só totaliza a partir das <b>17h de Brasília</b>; até lá, cada país entra pelos boletins de urna, publicados seção a seção depois que as urnas fecham lá. A página só consulta o TSE onde o horário já permite haver votos.</span>
-      <button type="button" data-ir-ele="6257">Ver o 1º turno enquanto isso</button>`;
-  } else {
-    el.hidden = true;
-  }
-}
-
 const nomesPaises = ids => {
   const nomes = [...new Set(ids)].map(id => COUNTRIES[id].nome);
   return nomes.length > 4 ? `${nomes.slice(0, 4).join(', ')} e mais ${nomes.length - 4}` : nomes.join(', ').replace(/, ([^,]*)$/, ' e $1');
@@ -640,8 +654,11 @@ function avisoExterior() {
   return `No exterior, as urnas já fecharam em <b>${n} ${n === 1 ? 'país' : 'países'}</b> (${esc(nomesPaises([...u.paisesFechados]))}), ${u.fechadas} de ${u.total} cidades${prox ? `; ${prox}` : ''}.`;
 }
 
+const TEXTO_SEM_VOTACAO = `Sem votação: menos de ${MINIMO_ELEITORES} eleitores, o mínimo para instalar uma seção no exterior`;
+
 function textoUrnas(u) {
   const d = dataEleicao();
+  if (u.estado === 'sem-votacao') return TEXTO_SEM_VOTACAO;
   if (u.total > 1 && u.fechadas > 0 && u.estado !== 'fechada') {
     return `Urnas fechadas em ${u.fechadas} de ${u.total} cidades; a última fecha às ${horaBrasilia(u.fecha, d)} (Brasília)`;
   }
@@ -711,22 +728,19 @@ function renderPlacar() {
 function renderLegenda() {
   const [a, b] = duelo();
   if (!a) { $('#legenda').innerHTML = ''; return; }
-  if (state.aba === 'exterior' && dados.zz && !dados.zz.validos) {
-    $('#legenda').innerHTML = `
-      <div class="legenda-titulo"><span>Urnas no exterior · votação das 8h às 17h locais</span></div>
-      <div class="legenda-urnas">
-        <span><i class="urna-st e-antes"></i>ainda não abriu</span>
-        <span><i class="urna-st e-votando"></i>votando agora</span>
-        <span><i class="urna-st e-fechada"></i>urnas fechadas, aguardando apuração</span>
-      </div>`;
-    return;
-  }
   const mid = css('--mid');
   const passos = c => INTENSIDADE.map(t => d3.interpolateLab(mid, corCand(c.n))(t));
   const esq = passos(a).reverse();
   const dir = passos(b);
   const sw = cores => cores.map(c => `<span style="background:${c}"></span>`).join('');
-  const extraPresidios = state.aba !== 'presidios' ? '' : `
+  // Enquanto o Brasil não tem voto apurado, o mapa mostra também onde ainda se vota (8h às 17h locais).
+  const extraUrnas = state.aba !== 'mapa' || dados.br?.validos ? '' : `
+    <div class="legenda-urnas" style="margin-top:6px">
+      <span><i class="urna-st e-antes"></i>ainda não abriu</span>
+      <span><i class="urna-st e-votando"></i>votando agora</span>
+      <span><i class="urna-st e-fechada"></i>urnas fechadas, sem votos apurados</span>
+    </div>`;
+  const extraPresidios = state.aba !== 'presidios' ? extraUrnas : `
     <div class="legenda-urnas" style="margin-top:6px">
       <span><i class="forma circulo"></i>prisional</span>
       <span><i class="forma quadrado"></i>socioeducativo</span>
@@ -747,7 +761,7 @@ function mostrarTooltip(ev, { titulo, icone = '', r, extra = '', urnas = null })
   const [a, b] = duelo();
   let corpo;
   if (!r) {
-    corpo = `<div class="tt-sub">${state.aba === 'exterior' && !dados.sincronizando ? 'Sem seção eleitoral brasileira' : 'Carregando resultados…'}</div>`;
+    corpo = '<div class="tt-sub">Carregando resultados…</div>';
   } else if (!r.secoesTot) {
     corpo = `<div class="tt-sub">${r.eleitorado ? `${fmt.format(r.eleitorado)} eleitores · apuração não iniciada` : 'Boletim de urna ainda não publicado'}</div>`;
   } else {
@@ -778,538 +792,21 @@ function moverTooltip(ev) {
 
 const esconderTooltip = () => { tip.hidden = true; };
 
-/* ---------------- mapa dos estados ---------------- */
+/* ---------------- mapa: o mundo, com o Brasil por estado ---------------- */
 
-// Um mapa só, com zoom: estados → municípios (dos estados à vista) → zonas e locais de votação
-// (do município em foco). Cada nível só carrega o que está na tela.
-const K_MUNICIPIOS = 2.2;   // a partir deste zoom, os estados à vista abrem os municípios
-const K_FOCO = 40;          // a partir deste, o município no centro da tela vira o "em foco"
-const MAX_ESTADOS_ABERTOS = 4;
-const TETO_POR_MINUTO = 60; // arquivos de município/zona por minuto, no máximo
-const INTERVALO_DETALHE = 3 * 60_000;
-
-let mapaBR = null;
-const geoMun = {};      // uf → { features, porCd }
-const locaisMun = {};   // cd → { uf, locais, zonas, bairros }
-let consultasDetalhe = [];
-
-async function montarEstados() {
-  const topo = await d3.json('data/br-uf.json');
-  const fc = topojson.feature(topo, topo.objects[Object.keys(topo.objects)[0]]);
-  const W = 600, H = 560;
-  const proj = d3.geoMercator().fitExtent([[12, 12], [W - 12, H - 12]], fc);
-  const path = d3.geoPath(proj);
-  const svg = d3.select('#mapa-estados').append('svg').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img');
-  const recorte = svg.append('defs').append('clipPath').attr('id', 'recorte-mun').append('path');
-  const fundo = svg.append('rect').attr('width', W).attr('height', H).style('fill', 'var(--ocean)');
-  const g = svg.append('g');
-  const gEstados = g.append('g');
-  const gMun = g.append('g');
-  const gZonas = g.append('g').attr('clip-path', 'url(#recorte-mun)');
-  const gBordasZona = g.append('g').attr('class', 'bordas-zona');
-  const gBordasUF = g.append('g').attr('class', 'bordas-uf');
-  const gLocais = g.append('g');
-  const gRotulos = g.append('g');
-  const uf = f => f.properties.sigla.toLowerCase();
-  for (const f of fc.features) f.caixa = path.bounds(f);
-
-  const paths = gEstados.selectAll('path').data(fc.features).join('path')
-    .attr('class', 'regiao ativa')
-    .attr('d', path)
-    .attr('data-id', uf)
-    .on('mouseenter mousemove', (ev, f) => mostrarTooltip(ev, { titulo: UFS[uf(f)], icone: `<span class="linha-ic">${uf(f).toUpperCase()}</span>`, r: dados.ufs[uf(f)] }))
-    .on('mouseleave', esconderTooltip)
-    .on('click', (ev, f) => { if (somar_(ev)) alternarMulti(uf(f)); else selecionar(uf(f)); })
-    .on('contextmenu', (ev, f) => { if (ev.ctrlKey) { ev.preventDefault(); alternarMulti(uf(f)); } });
-  gBordasUF.selectAll('path').data(fc.features).join('path').attr('d', path);
-  const rotulosUF = gRotulos.append('g').selectAll('text').data(fc.features).join('text')
-    .attr('class', 'rotulo-uf')
-    .attr('transform', f => `translate(${path.centroid(f)})`)
-    .text(f => f.properties.sigla);
-  const gRotulosMun = gRotulos.append('g');
-
-  fundo.on('click', () => subirNivel());
-  let quadro = 0;
-  const zoom = d3.zoom().scaleExtent([1, 4000]).translateExtent([[-W, -H], [2 * W, 2 * H]])
-    .on('zoom', ev => {
-      mapaBR.t = ev.transform;
-      g.attr('transform', ev.transform);
-      cancelAnimationFrame(quadro);
-      quadro = requestAnimationFrame(ajustarEscalaBR);
-    })
-    .on('end', () => { desenharDetalhe(); agendarDetalhe(); });
-  svg.call(zoom).on('dblclick.zoom', null);
-
-  document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => {
-    if (state.aba !== 'estados') return;
-    const acao = btn.dataset.zoom;
-    if (acao === 'reset') { selecionar(null); return; }
-    svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
-  }));
-
-  mapaBR = {
-    svg, g, W, H, proj, path, zoom, recorte, fc, porUF: new Map(fc.features.map(f => [uf(f), f])),
-    gMun, gZonas, gBordasZona, gLocais, gRotulosMun, paths, rotulosUF, t: d3.zoomIdentity, enquadrado: null,
-  };
-  pintarEstados();
-}
-
-// Parte do mapa (em coordenadas do mapa, sem zoom) que está na tela.
-function janelaVisivel() {
-  const { t, W, H } = mapaBR;
-  return [[t.invertX(0), t.invertY(0)], [t.invertX(W), t.invertY(H)]];
-}
-
-const cruza = (a, b) => a[0][0] < b[1][0] && a[1][0] > b[0][0] && a[0][1] < b[1][1] && a[1][1] > b[0][1];
-
-function estadosAbertos() {
-  // Somando estados, o mapa fica no nível de estado: o destaque é a seleção, não os municípios.
-  if (!mapaBR || state.multi.length) return [];
-  const abertos = new Set();
-  if (state.sel && UFS[state.sel]) abertos.add(state.sel);
-  if (mapaBR.t.k >= K_MUNICIPIOS) {
-    const j = janelaVisivel();
-    const visiveis = [...mapaBR.porUF.entries()].filter(([, f]) => cruza(f.caixa, j))
-      .map(([uf, f]) => {
-        const [[x0, y0], [x1, y1]] = f.caixa;
-        const area = Math.max(0, Math.min(x1, j[1][0]) - Math.max(x0, j[0][0])) * Math.max(0, Math.min(y1, j[1][1]) - Math.max(y0, j[0][1]));
-        return [uf, area];
-      })
-      .sort((a, b) => b[1] - a[1]);
-    for (const [u] of visiveis) { if (abertos.size >= MAX_ESTADOS_ABERTOS) break; abertos.add(u); }
-  }
-  return [...abertos];
-}
-
-async function carregarGeoMun(uf) {
-  if (geoMun[uf]) return geoMun[uf];
-  const topo = await d3.json(`data/mun/${uf}.json`);
-  const features = topojson.feature(topo, topo.objects.mun).features;
-  for (const f of features) {
-    f.uf = uf;
-    f.d = mapaBR.path(f);
-    f.caixa = mapaBR.path.bounds(f);
-    f.area = mapaBR.path.area(f);
-    f.centro = mapaBR.path.centroid(f);
-  }
-  geoMun[uf] = { features, porCd: new Map(features.map(f => [f.properties.cd, f])) };
-  return geoMun[uf];
-}
-
-function featureMun(cd) {
-  for (const g of Object.values(geoMun)) if (g.porCd.has(cd)) return g.porCd.get(cd);
-  return null;
-}
-
-async function carregarLocais(uf, cd) {
-  if (locaisMun[cd]) return locaisMun[cd];
-  const j = await d3.json(`data/locais/${uf}/${cd}.json`);
-  const locais = j.locais.map(l => ({
-    ...l, id: `${l.z}-${l.l}`, uf, cd,
-    xy: l.lat != null ? mapaBR.proj([l.lon, l.lat]) : null,
-  }));
-  const zonas = [...new Set(locais.map(l => l.z))].sort((a, b) => a - b);
-  const bairros = d3.group(locais, l => l.b || '(sem bairro)');
-  locaisMun[cd] = { uf, cd, locais, zonas, bairros, porId: new Map(locais.map(l => [l.id, l])) };
-  return locaisMun[cd];
-}
-
-// Município em foco: o selecionado ou, com bastante zoom, o que está no centro da tela.
-function municipioEmFoco() {
-  if (state.mun) return featureMun(state.mun);
-  if (!mapaBR || mapaBR.t.k < K_FOCO) return null;
-  const { t, W, H } = mapaBR;
-  const centro = [t.invertX(W / 2), t.invertY(H / 2)];
-  const lonlat = mapaBR.proj.invert(centro);
-  for (const uf of estadosAbertos()) {
-    const g = geoMun[uf];
-    if (!g) continue;
-    for (const f of g.features) {
-      const [[x0, y0], [x1, y1]] = f.caixa;
-      if (centro[0] < x0 || centro[0] > x1 || centro[1] < y0 || centro[1] > y1) continue;
-      if (d3.geoContains(f, lonlat)) return f;
-    }
-  }
-  return null;
-}
-
-/* ----- resultados por município, zona, bairro e local ----- */
-
-function resultadoMun(uf, cd) {
-  const r = dados.cache.get(`mu:${cd}`);
-  if (r) return r;
-  // Só o índice: zerado de verdade quando nada foi apurado; com seções apuradas, ainda não sabemos os votos.
-  const ix = dados.cache.get(`idx:${uf}`)?.[cd];
-  return ix && dados.br && ix.secoesTot === 0 ? resultadoVazio(ix, dados.br) : null;
-}
-
-function resultadoZona(cd, z) {
-  const r = dados.cache.get(`zn:${cd}:${z}`);
-  if (r) return r;
-  const lm = locaisMun[cd];
-  if (lm?.zonas.length === 1) return resultadoMun(lm.uf, cd);
-  // Antes das 17h, ou com o município sem nada apurado, a zona não é consultada: mostra zerada, não "carregando".
-  const ix = lm ? dados.cache.get(`idx:${lm.uf}`)?.[cd] : null;
-  const esperando = urnasBrasil(dataEleicao()).estado !== 'fechada' || ix?.secoesTot === 0;
-  if (!esperando || !lm || !dados.br) return null;
-  const locais = lm.locais.filter(l => l.z === Number(z));
-  return resultadoVazio({
-    versao: '', eleitorado: locais.reduce((a, l) => a + l.el, 0), secoes: locais.reduce((a, l) => a + l.s.length, 0), andamento: 'n',
-  }, dados.br);
-}
-
-function secoesDeLocais(locais) {
-  return locais.flatMap(l => l.s.map(secao => ({ uf: l.uf, mun: l.cd, zona: l.z, secao, id: `${l.cd}-${l.z}-${secao}` })));
-}
-
-// Bairro e local não têm total na API: somam os boletins de urna das seções já carregadas.
-function resultadoSecoes(secoes) {
-  if (!dados.br) return null;
-  const modelo = dados.br;
-  const vazio = {
-    versao: '', cands: modelo.cands.map(c => ({ ...c, votos: 0, pct: 0 })), eleitorado: 0, comparecimento: 0,
-    abstencao: 0, validos: 0, brancos: 0, nulos: 0, secoes: 1, secoesTot: 0, andamento: 'n', totalizado: '',
-  };
-  return somar(secoes.map(sec => {
-    const bu = dados.cache.get(`bu:${sec.id}`);
-    return bu ? resultadoBoletim(bu, modelo) : vazio;
-  }));
-}
-
-/* ----- carga do detalhe (fila com teto por minuto) ----- */
-
-function folgaDetalhe() {
-  const agora = Date.now();
-  consultasDetalhe = consultasDetalhe.filter(t => agora - t < 60_000);
-  return Math.max(0, TETO_POR_MINUTO - consultasDetalhe.length);
-}
-
-let timerDetalhe = null;
-function agendarDetalhe() {
-  clearTimeout(timerDetalhe);
-  timerDetalhe = setTimeout(() => {
-    const alvo = dados;
-    atualizarDetalhe(alvo)
-      .catch(err => { if (alvo === dados) registrarFalha(err); })
-      .finally(() => {
-        alvo.cache.salvar();
-        if (alvo !== dados) return;
-        render();
-        // Sobrou fila por causa do teto: continua sozinho quando a janela de um minuto liberar.
-        if (alvo.detalheRestante > 0 && state.aba === 'estados') {
-          clearTimeout(timerFila);
-          timerFila = setTimeout(agendarDetalhe, 61_000);
-        }
-        // O ciclo principal tinha parado (tudo pronto), mas o detalhe ainda espera algo: religa.
-        if (!proximaEm && planoDeConsulta(alvo).podeMudar) reavaliar();
-      });
-  }, 350);
-}
-let timerFila = null;
-
-function atualizarDetalhe(alvo) {
-  if (alvo.detalhe) return alvo.detalhe;
-  alvo.detalhe = (async () => {
-    if (!mapaBR || state.aba !== 'estados') return;
-    const { ele, cache } = alvo;
-    const plano = planoDeConsulta(alvo);
-    const abertos = estadosAbertos();
-    await Promise.all(abertos.map(carregarGeoMun));
-    const foco = municipioEmFoco();
-    if (foco) await carregarLocais(foco.uf, foco.properties.cd);
-    if (alvo !== dados) return;
-    desenharDetalhe();
-
-    // Índice do estado: uma vez (dá o eleitorado de cada município); depois das 17h, a cada ciclo
-    // enquanto o estado não terminou, e mais uma vez depois que ele termina.
-    for (const uf of abertos) {
-      const idx = cache.get(`idx:${uf}`);
-      const velho = Date.now() - (cache.get(`idxEm:${uf}`) ?? 0) >= INTERVALO;
-      const precisa = !idx || (plano.brasilFechado && !cache.get(`idxPronto:${uf}`) && velho);
-      // Uma falha não vira nova tentativa a cada zoom: no máximo uma por minuto.
-      alvo.idxTentado ??= {};
-      if (!precisa || Date.now() - (alvo.idxTentado[uf] ?? 0) < INTERVALO) continue;
-      alvo.idxTentado[uf] = Date.now();
-      const m = await fetchIndice(ele, uf);
-      const municipios = Object.fromEntries([...m].filter(([cd]) => cd !== uf));
-      cache.set(`idx:${uf}`, municipios);
-      cache.set(`idxEm:${uf}`, Date.now());
-      // Só para de atualizar o índice quando cada município nele estiver encerrado (o estado pode
-      // terminar antes de um índice atrasado do CDN mostrar isso).
-      const todosProntos = Object.values(municipios).every(ix => ix.andamento === 'f' && ix.secoesTot === ix.secoes);
-      if (pronto(cache.get(uf)) && todosProntos) cache.set(`idxPronto:${uf}`, true);
-    }
-    // Antes das 17h de Brasília não há voto de município nem de zona: o índice basta.
-    if (!plano.brasilFechado) return;
-
-    const baixar = [];
-    let prioritarios = 0;
-    const quer = (chave, atual, ix, executar, exigeIndice = true) => {
-      if (pronto(atual)) return;
-      if (exigeIndice && !ix) return; // fora do índice (ainda): espera o índice, não baixa às cegas
-      if (Date.now() - (alvo.falhouEm?.[chave] ?? 0) < INTERVALO) return; // falhou há pouco
-      if (ix && ix.secoesTot === 0) return; // nada apurado: o índice basta
-      const final = ix && ix.andamento === 'f' && ix.secoesTot === ix.secoes;
-      if (atual?.baixadoEm && Date.now() - atual.baixadoEm < INTERVALO_DETALHE && !final) return;
-      if (atual && ix && !desatualizado(atual, ix)) return;
-      baixar.push({ chave, executar });
-    };
-    // Prioridade: o município em foco e as zonas dele; depois os municípios à vista, maiores primeiro.
-    // O que você selecionou ou aproximou (município em foco e zonas dele) fica fora do teto por minuto.
-    if (foco) {
-      const cd = foco.properties.cd;
-      const ix = cache.get(`idx:${foco.uf}`)?.[cd];
-      quer(`mu:${cd}`, cache.get(`mu:${cd}`), ix, () => fetchResultado(ele, foco.uf, cd));
-      const lm = locaisMun[cd];
-      if (lm && lm.zonas.length > 1 && ix?.secoesTot > 0) {
-        for (const z of lm.zonas) quer(`zn:${cd}:${z}`, cache.get(`zn:${cd}:${z}`), null, () => fetchResultado(ele, foco.uf, cd, z), false);
-      }
-      prioritarios = baixar.length;
-    }
-    const j = janelaVisivel();
-    const visiveis = abertos.flatMap(uf => geoMun[uf]?.features ?? []).filter(f => cruza(f.caixa, j))
-      .map(f => ({ f, ix: cache.get(`idx:${f.uf}`)?.[f.properties.cd] }))
-      .sort((a, b) => (b.ix?.eleitorado ?? 0) - (a.ix?.eleitorado ?? 0));
-    for (const { f, ix } of visiveis) {
-      const cd = f.properties.cd;
-      if (foco && cd === foco.properties.cd) continue;
-      quer(`mu:${cd}`, cache.get(`mu:${cd}`), ix, () => fetchResultado(ele, f.uf, cd));
-    }
-    const lote = [...baixar.slice(0, prioritarios), ...baixar.slice(prioritarios, prioritarios + folgaDetalhe())];
-    alvo.detalheRestante = baixar.length - lote.length;
-    await baixarArquivos(alvo, lote, async item => {
-      consultasDetalhe.push(Date.now());
-      try {
-        guardar(cache, item.chave, await item.executar());
-      } catch (err) {
-        (alvo.falhouEm ??= {})[item.chave] = Date.now();
-        throw err;
-      }
-    });
-    // Bairro ou local selecionado: boletins que ainda faltam entram em toda rodada (cada seção respeita o prazo).
-    await pool(alvo, secoesSelecionadas(), sec => buscarBoletim(alvo, sec));
-  })().finally(() => { alvo.detalhe = null; });
-  return alvo.detalhe;
-}
-
-// Boletins de urna sob demanda (bairro ou local clicado): só depois das 17h, cada seção no máximo
-// a cada 5 minutos, e o boletim publicado fica guardado para sempre.
-function carregarBoletins(secoes) {
-  const alvo = dados;
-  if (!planoDeConsulta(alvo).brasilFechado) return;
-  const agora = Date.now();
-  const faltam = secoes.filter(sec => !alvo.cache.get(`bu:${sec.id}`) && agora - alvo.cache.tentativa(sec.id) >= INTERVALO_BU);
-  if (!faltam.length) return;
-  baixarArquivos(alvo, faltam, async sec => {
-    await buscarBoletim(alvo, sec);
-    if (alvo === dados) renderLateral();
-  })
-    .catch(err => { if (alvo === dados) registrarFalha(err); })
-    .finally(() => { alvo.cache.salvar(); if (alvo === dados) render(); });
-}
-
-// Seções do bairro ou local selecionado.
-function secoesSelecionadas() {
-  const lm = state.mun ? locaisMun[state.mun] : null;
-  if (!lm) return [];
-  if (state.local) return secoesDeLocais([lm.porId.get(state.local)].filter(Boolean));
-  if (state.bairro) return secoesDeLocais(lm.bairros.get(state.bairro) ?? []);
-  return [];
-}
-
-// Algo à vista (municípios dos estados abertos, zonas do município em foco, boletins da seleção) ainda
-// pode mudar: mantém o ciclo vivo depois das 17h.
-function detalheIncompleto(alvo) {
-  const { cache } = alvo;
-  const abertos = estadosAbertos();
-  if (abertos.some(uf => !cache.get(`idxPronto:${uf}`))) return true;
-  const j = mapaBR ? janelaVisivel() : null;
-  for (const uf of abertos) {
-    for (const f of geoMun[uf]?.features ?? []) {
-      if (j && !cruza(f.caixa, j)) continue;
-      const ix = cache.get(`idx:${uf}`)?.[f.properties.cd];
-      if (ix?.secoesTot > 0 && !pronto(cache.get(`mu:${f.properties.cd}`))) return true;
-    }
-  }
-  const foco = municipioEmFoco();
-  if (foco) {
-    const ix = cache.get(`idx:${foco.uf}`)?.[foco.properties.cd];
-    if (ix?.secoesTot > 0 && !pronto(cache.get(`mu:${foco.properties.cd}`))) return true;
-  }
-  const lm = foco ? locaisMun[foco.properties.cd] : null;
-  if (lm && lm.zonas.length > 1 && lm.zonas.some(z => !pronto(cache.get(`zn:${lm.cd}:${z}`)))) return true;
-  return secoesSelecionadas().some(sec => !cache.get(`bu:${sec.id}`));
-}
-
-/* ----- desenho ----- */
-
-function desenharDetalhe() {
-  if (!mapaBR) return;
-  const abertos = estadosAbertos();
-  const feats = abertos.flatMap(uf => geoMun[uf]?.features ?? []);
-  mapaBR.gMun.selectAll('path').data(feats, f => f.properties.cd).join(entra => entra.append('path')
-    .attr('class', 'regiao ativa mun')
-    .attr('d', f => f.d)
-    .attr('data-id', f => f.properties.cd)
-    .on('mouseenter mousemove', (ev, f) => mostrarTooltip(ev, {
-      titulo: f.properties.nome,
-      icone: `<span class="linha-ic">${f.uf.toUpperCase()}</span>`,
-      r: resultadoMun(f.uf, f.properties.cd),
-      urnas: urnasBrasil(dataEleicao()),
-    }))
-    .on('mouseleave', esconderTooltip)
-    .on('click', (ev, f) => { ev.stopPropagation(); if (somar_(ev)) alternarMulti(f.uf); else selecionarMun(f.uf, f.properties.cd); })
-    .on('contextmenu', (ev, f) => { if (ev.ctrlKey) { ev.preventDefault(); ev.stopPropagation(); alternarMulti(f.uf); } }));
-
-  // Zonas: área aproximada, das células de Voronoi dos locais de votação, recortada no município.
-  const foco = municipioEmFoco();
-  const lm = foco ? locaisMun[foco.properties.cd] : null;
-  const comXY = lm ? lm.locais.filter(l => l.xy) : [];
-  let celulas = [];
-  let bordas = [];
-  if (lm && lm.zonas.length > 1 && comXY.length > 2) {
-    mapaBR.recorte.attr('d', foco.d);
-    const [[x0, y0], [x1, y1]] = foco.caixa;
-    const delaunay = d3.Delaunay.from(comXY, l => l.xy[0], l => l.xy[1]);
-    const voronoi = delaunay.voronoi([x0 - 1, y0 - 1, x1 + 1, y1 + 1]);
-    celulas = comXY.map((l, i) => ({ l, d: voronoi.renderCell(i), poli: voronoi.cellPolygon(i) }));
-    const igual = (a, b) => Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
-    for (let i = 0; i < comXY.length; i++) {
-      for (const jn of delaunay.neighbors(i)) {
-        if (jn <= i || comXY[jn].z === comXY[i].z || !celulas[i].poli || !celulas[jn].poli) continue;
-        const comuns = celulas[i].poli.filter(p => celulas[jn].poli.some(q => igual(p, q)));
-        if (comuns.length >= 2) bordas.push([comuns[0], comuns[1]]);
-      }
-    }
-  }
-  mapaBR.gZonas.selectAll('path').data(celulas).join('path')
-    .attr('class', 'celula-zona')
-    .attr('d', c => c.d)
-    .attr('data-zona', c => c.l.z)
-    .on('mouseenter mousemove', (ev, c) => mostrarTooltip(ev, {
-      titulo: `Zona ${c.l.z}`,
-      icone: `<span class="linha-ic">${c.l.uf.toUpperCase()}</span>`,
-      r: resultadoZona(c.l.cd, c.l.z),
-      urnas: urnasBrasil(dataEleicao()),
-      extra: `<div class="tt-sub" style="margin:6px 0 0">${esc(foco.properties.nome)} · área aproximada, desenhada a partir dos locais de votação</div>`,
-    }))
-    .on('mouseleave', esconderTooltip)
-    .on('click', (ev, c) => { ev.stopPropagation(); selecionarZona(c.l.z); });
-  mapaBR.gBordasZona.selectAll('path').data(bordas).join('path').attr('d', ([a, b]) => `M${a}L${b}`);
-
-  mapaBR.gLocais.selectAll('circle').data(comXY, l => l.id).join('circle')
-    .attr('class', 'local')
-    .attr('cx', l => l.xy[0]).attr('cy', l => l.xy[1])
-    .attr('data-id', l => l.id)
-    .on('mouseenter mousemove', (ev, l) => {
-      const r = resultadoSecoes(secoesDeLocais([l]));
-      mostrarTooltip(ev, {
-        titulo: nomeLocal(l.n),
-        icone: '',
-        r: r?.validos ? r : null,
-        extra: `<div class="tt-sub" style="margin:6px 0 0">${esc(nomeLocal(l.b || ''))} · zona ${l.z} · ${l.s.length} ${l.s.length > 1 ? 'seções' : 'seção'} · ${fmt.format(l.el)} eleitores${r?.validos ? '' : '<br>Clique para carregar os boletins de urna'}</div>`,
-      });
-    })
-    .on('mouseleave', esconderTooltip)
-    .on('click', (ev, l) => { ev.stopPropagation(); selecionarLocal(l.id); });
-
-  // Rótulos de município: só os que já aparecem grandes na tela, no máximo 80.
-  const k = mapaBR.t.k;
-  const j = janelaVisivel();
-  const rotulos = k < K_MUNICIPIOS ? [] : feats
-    .filter(f => f.area * k * k > 2500 && f.centro[0] > j[0][0] && f.centro[0] < j[1][0] && f.centro[1] > j[0][1] && f.centro[1] < j[1][1])
-    .sort((a, b) => b.area - a.area).slice(0, 80);
-  mapaBR.gRotulosMun.selectAll('text').data(rotulos, f => f.properties.cd).join('text')
-    .attr('class', 'rotulo-mun')
-    .attr('transform', f => `translate(${f.centro})`)
-    .text(f => f.properties.nome);
-  ajustarEscalaBR();
-  pintarEstados();
-}
-
-// Mantém tamanho de tela constante para pontos e rótulos durante o zoom.
-function ajustarEscalaBR() {
-  if (!mapaBR) return;
-  const k = mapaBR.t.k;
-  mapaBR.rotulosUF.style('display', k >= K_MUNICIPIOS ? 'none' : null)
-    .style('font-size', `${10.5 / Math.sqrt(k)}px`).style('stroke-width', `${3 / Math.sqrt(k)}px`);
-  mapaBR.gRotulosMun.selectAll('text').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`);
-  mapaBR.gLocais.selectAll('circle').attr('r', 4 / k);
-}
-
-function pintarEstados() {
-  if (!mapaBR) return;
-  const abertos = new Set(estadosAbertos());
-  const naAba = state.aba === 'estados';
-  mapaBR.paths
-    .style('fill', f => corRegiao(dados.ufs[f.properties.sigla.toLowerCase()]))
-    .classed('sel', f => naAba && !state.mun && (state.sel === f.properties.sigla.toLowerCase() || state.multi.includes(f.properties.sigla.toLowerCase())))
-    .classed('aberto', f => abertos.has(f.properties.sigla.toLowerCase()));
-  const u = urnasBrasil(dataEleicao());
-  const urnas = u.estado === 'fechada' ? u : { estado: 'antes' };
-  // Sem resultado ainda carregado: cinza claro. O cinza-escuro fica para "urna fechada, nada apurado".
-  const cor = r => corRegiao(r, r ? urnas : null);
-  mapaBR.gMun.selectAll('path')
-    .style('fill', f => cor(resultadoMun(f.uf, f.properties.cd)))
-    .classed('sel', f => naAba && state.mun === f.properties.cd && state.zona == null && !state.bairro && !state.local);
-  mapaBR.gZonas.selectAll('path')
-    .style('fill', c => cor(resultadoZona(c.l.cd, c.l.z)))
-    .classed('sel', c => naAba && state.zona === c.l.z);
-  const bairroSel = state.bairro;
-  mapaBR.gLocais.selectAll('circle')
-    .style('fill', l => {
-      const r = resultadoSecoes(secoesDeLocais([l]));
-      return r?.validos ? corRegiao(r) : 'var(--surface)';
-    })
-    .classed('sel', l => naAba && (state.local === l.id || (bairroSel && (l.b || '(sem bairro)') === bairroSel)));
-  if (naAba) enquadrarSelecao();
-}
-
-// Aproxima o mapa da seleção do painel (estado, município, zona, bairro ou local).
-function enquadrarSelecao() {
-  const chave = [state.sel, state.mun, state.zona, state.bairro, state.local, state.multi.join(',')].join('|');
-  if (mapaBR.enquadrado === chave) return;
-  let caixa = null;
-  let kMin = 1;
-  const lm = state.mun ? locaisMun[state.mun] : null;
-  if (state.local && lm?.porId.get(state.local)?.xy) {
-    const [x, y] = lm.porId.get(state.local).xy;
-    caixa = [[x - 0.4, y - 0.4], [x + 0.4, y + 0.4]];
-  } else if ((state.bairro || state.zona != null) && lm) {
-    const sel = lm.locais.filter(l => l.xy && (state.bairro ? (l.b || '(sem bairro)') === state.bairro : l.z === state.zona));
-    if (sel.length) {
-      const xs = sel.map(l => l.xy[0]);
-      const ys = sel.map(l => l.xy[1]);
-      caixa = [[Math.min(...xs) - 0.3, Math.min(...ys) - 0.3], [Math.max(...xs) + 0.3, Math.max(...ys) + 0.3]];
-    }
-  } else if (state.mun) {
-    caixa = featureMun(state.mun)?.caixa ?? null;
-    if (!caixa) return; // a malha do estado ainda não chegou; tenta no próximo desenho
-  } else if (state.multi.some(uf => mapaBR.porUF.has(uf))) {
-    const caixas = state.multi.filter(uf => mapaBR.porUF.has(uf)).map(uf => mapaBR.porUF.get(uf).caixa);
-    caixa = [[d3.min(caixas, c => c[0][0]), d3.min(caixas, c => c[0][1])], [d3.max(caixas, c => c[1][0]), d3.max(caixas, c => c[1][1])]];
-  } else if (state.sel && mapaBR.porUF.has(state.sel)) {
-    caixa = mapaBR.porUF.get(state.sel).caixa;
-    kMin = K_MUNICIPIOS;
-  }
-  mapaBR.enquadrado = chave;
-  const { svg, zoom, W, H } = mapaBR;
-  if (!caixa) { svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity); return; }
-  const [[x0, y0], [x1, y1]] = caixa;
-  const escala = Math.min(3000, Math.max(kMin, 0.85 / Math.max((x1 - x0) / W, (y1 - y0) / H, 1e-6)));
-  const t = d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
-  svg.transition().duration(750).call(zoom.transform, t);
-}
-
-/* ---------------- mapa-múndi ---------------- */
+// Um mapa só: o Brasil dividido em estados e, em volta, os países onde há seção eleitoral brasileira.
+// Ao escolher um país, aparecem as cidades dele com seção.
+const BRASIL = '076';
+const K_ROTULOS_UF = 3; // a partir deste zoom, os estados ganham a sigla
 
 let mundo = null;
 
 async function montarMundo() {
-  const topo = await d3.json('data/countries-50m.json');
-  const features = topojson.feature(topo, topo.objects.countries).features.filter(f => f.id !== ANTARTIDA);
+  const [topo, topoUF] = await Promise.all([d3.json('data/countries-50m.json'), d3.json('data/br-uf.json')]);
+  const features = topojson.feature(topo, topo.objects.countries).features.filter(f => f.id !== ANTARTIDA && f.id !== BRASIL);
+  const estados = topojson.feature(topoUF, topoUF.objects[Object.keys(topoUF.objects)[0]]).features;
   const W = 960, H = 500;
-  const proj = d3.geoNaturalEarth1().fitExtent([[8, 8], [W - 8, H - 8]], { type: 'FeatureCollection', features });
+  const proj = d3.geoNaturalEarth1().fitExtent([[8, 8], [W - 8, H - 8]], { type: 'FeatureCollection', features: [...features, ...estados] });
   const path = d3.geoPath(proj);
 
   const svg = d3.select('#mapa-mundo').append('svg').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img');
@@ -1321,6 +818,8 @@ async function montarMundo() {
   const fundo = svg.append('rect').attr('width', W).attr('height', H).style('fill', 'var(--ocean)');
   const g = svg.append('g');
   const gPaises = g.append('g');
+  const gEstados = g.append('g');
+  const gRotulosUF = g.append('g');
   const gMarcadores = g.append('g');
   const gCidades = g.append('g');
 
@@ -1339,6 +838,23 @@ async function montarMundo() {
     .on('mouseleave', esconderTooltip)
     .on('click', (ev, f) => { if (COUNTRIES[f.id]) selecionar(f.id); });
 
+  const uf = f => f.properties.sigla.toLowerCase();
+  const pathsUF = gEstados.selectAll('path').data(estados).join('path')
+    .attr('class', 'regiao ativa')
+    .attr('d', path)
+    .attr('data-id', uf)
+    .on('mouseenter mousemove', (ev, f) => mostrarTooltip(ev, {
+      titulo: UFS[uf(f)], icone: `<span class="linha-ic">${uf(f).toUpperCase()}</span>`, r: dados.ufs[uf(f)], urnas: urnasBrasil(dataEleicao()),
+    }))
+    .on('mouseleave', esconderTooltip)
+    .on('click', (ev, f) => { if (somar_(ev)) alternarMulti(uf(f)); else selecionar(uf(f)); })
+    .on('contextmenu', (ev, f) => { if (ev.ctrlKey) { ev.preventDefault(); alternarMulti(uf(f)); } });
+  const rotulosUF = gRotulosUF.selectAll('text').data(estados).join('text')
+    .attr('class', 'rotulo-uf')
+    .attr('transform', f => `translate(${path.centroid(f)})`)
+    .text(f => f.properties.sigla);
+  const caixaUF = new Map(estados.map(f => [uf(f), path.bounds(f)]));
+
   // Países pequenos demais para clicar no mapa ganham um marcador na cidade principal.
   const porId = new Map(features.map(f => [f.id, f]));
   const primeiraCidade = {};
@@ -1348,12 +864,13 @@ async function montarMundo() {
   const marcadores = gMarcadores.selectAll('circle').data(pequenos).join('circle')
     .attr('class', 'marcador')
     .attr('cx', d => d.xy[0]).attr('cy', d => d.xy[1])
+    .attr('data-id', d => d.id)
     .on('mouseenter mousemove', (ev, d) => previewPais(ev, d.id, COUNTRIES[d.id].nome))
     .on('mouseleave', esconderTooltip)
     .on('click', (ev, d) => selecionar(d.id));
 
   let k = 1;
-  const zoom = d3.zoom().scaleExtent([1, 60]).translateExtent([[0, 0], [W, H]])
+  const zoom = d3.zoom().scaleExtent([1, 150]).translateExtent([[0, 0], [W, H]])
     .on('zoom', ev => {
       k = ev.transform.k;
       g.attr('transform', ev.transform);
@@ -1361,12 +878,21 @@ async function montarMundo() {
       escalarMarcas();
     });
   svg.call(zoom).on('dblclick.zoom', null);
-  fundo.on('click', () => selecionar(null));
+  fundo.on('click', () => voltar());
 
+  // Pontos e rótulos ficam do mesmo tamanho na tela em qualquer zoom.
   function escalarMarcas() {
     marcadores.attr('r', 4.5 / Math.sqrt(k));
+    rotulosUF.style('display', k >= K_ROTULOS_UF ? null : 'none')
+      .style('font-size', `${10.5 / k}px`).style('stroke-width', `${3 / k}px`);
     gCidades.selectAll('circle').attr('r', 5.5 / k);
     gCidades.selectAll('text').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`).attr('dx', 8 / k).attr('dy', 4 / k);
+  }
+
+  function enquadrarCaixa([[x0, y0], [x1, y1]], folga, max) {
+    const escala = Math.min(max, folga / Math.max((x1 - x0) / W, (y1 - y0) / H, 1e-3));
+    const t = d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
+    svg.transition().duration(750).call(zoom.transform, t);
   }
 
   function enquadrar(id) {
@@ -1385,10 +911,14 @@ async function montarMundo() {
     for (const [x, y] of pontos) {
       bounds = [[Math.min(bounds[0][0], x), Math.min(bounds[0][1], y)], [Math.max(bounds[1][0], x), Math.max(bounds[1][1], y)]];
     }
-    const [[x0, y0], [x1, y1]] = bounds;
-    const escala = Math.min(40, 0.75 / Math.max((x1 - x0) / W, (y1 - y0) / H, 1e-3));
-    const t = d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
-    svg.transition().duration(750).call(zoom.transform, t);
+    enquadrarCaixa(bounds, 0.75, 40);
+  }
+
+  // Um ou mais estados (soma), com folga em volta.
+  function enquadrarEstados(ufs) {
+    const cs = ufs.map(u => caixaUF.get(u)).filter(Boolean);
+    if (!cs.length) { resetar(); return; }
+    enquadrarCaixa([[d3.min(cs, c => c[0][0]), d3.min(cs, c => c[0][1])], [d3.max(cs, c => c[1][0]), d3.max(cs, c => c[1][1])]], 0.8, 150);
   }
 
   const resetar = () => svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
@@ -1399,20 +929,18 @@ async function montarMundo() {
     const pts = cds.map(cd => proj([CITIES[cd][2], CITIES[cd][1]]));
     const xs = pts.map(p => p[0]);
     const ys = pts.map(p => p[1]);
-    const [x0, x1, y0, y1] = [Math.min(...xs) - 25, Math.max(...xs) + 25, Math.min(...ys) - 25, Math.max(...ys) + 25];
-    const escala = Math.min(12, 0.9 / Math.max((x1 - x0) / W, (y1 - y0) / H));
-    const t = d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
-    svg.transition().duration(750).call(zoom.transform, t);
+    enquadrarCaixa([[Math.min(...xs) - 25, Math.min(...ys) - 25], [Math.max(...xs) + 25, Math.max(...ys) + 25]], 0.9, 12);
   }
 
   document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => {
-    if (state.aba !== 'exterior') return;
+    if (state.aba !== 'mapa') return;
     const acao = btn.dataset.zoom;
     if (acao === 'reset') { selecionar(null); return; }
     svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
   }));
 
-  mundo = { svg, paths, marcadores, gCidades, proj, enquadrar, enquadrarCidades, resetar, escalarMarcas, enquadrado: null };
+  mundo = { svg, paths, pathsUF, marcadores, gCidades, proj, enquadrar, enquadrarEstados, enquadrarCidades, resetar, escalarMarcas, enquadrado: null };
+  escalarMarcas();
   pintarMundo();
 }
 
@@ -1505,14 +1033,24 @@ function maiorPoligono(f) {
 
 function pintarMundo() {
   if (!mundo) return;
-  const paisSel = state.aba === 'exterior' ? state.sel : null;
-  const doContinente = new Set(state.aba === 'exterior' && state.continente && !paisSel ? paisesDoContinente(state.continente) : []);
+  const naAba = state.aba === 'mapa';
+  const paisSel = naAba && COUNTRIES[state.sel] ? state.sel : null;
+  const ufSel = naAba && UFS[state.sel] ? state.sel : null;
+  const multi = naAba ? state.multi : [];
+  const doContinente = new Set(naAba && state.continente && !paisSel ? paisesDoContinente(state.continente) : []);
+  // "Exterior" na soma acende todos os países com seção.
+  const somaExterior = multi.includes('zz');
+  const marcado = id => id === paisSel || doContinente.has(id) || (somaExterior && !!COUNTRIES[id]);
+  const urnasBR = urnasBrasil(dataEleicao());
+  mundo.pathsUF
+    .style('fill', f => corRegiao(dados.ufs[f.properties.sigla.toLowerCase()], urnasBR))
+    .classed('sel', f => { const u = f.properties.sigla.toLowerCase(); return u === ufSel || multi.includes(u); });
   mundo.paths
     .style('fill', f => (COUNTRIES[f.id] ? corRegiao(dados.paises[f.id], urnasPais(f.id, dataEleicao())) : css('--land')))
-    .classed('sel', f => f.id === paisSel || doContinente.has(f.id));
+    .classed('sel', f => marcado(f.id));
   mundo.marcadores
     .style('fill', d => corRegiao(dados.paises[d.id], urnasPais(d.id, dataEleicao())))
-    .classed('sel', d => d.id === paisSel || doContinente.has(d.id));
+    .classed('sel', d => marcado(d.id));
 
   const cidades = paisSel ? Object.values(dados.cidades).filter(c => c.pais === paisSel && (!state.continente || continenteDaCidade(c.cd) === state.continente)) : [];
   const grupos = mundo.gCidades.selectAll('g.cid').data(cidades, c => c.cd).join(entrar => {
@@ -1529,10 +1067,17 @@ function pintarMundo() {
   grupos.select('text').text(c => c.nome);
   mundo.escalarMarcas();
 
-  const alvoMapa = paisSel ?? (state.continente ? `cont:${state.continente}` : null);
-  if (state.aba === 'exterior' && mundo.enquadrado !== alvoMapa) {
+  // Aproxima o mapa do que está escolhido no painel (escolher uma cidade não mexe no enquadramento).
+  const alvoMapa = !naAba ? null
+    : multi.length ? `soma:${multi.join(',')}`
+    : ufSel ? `uf:${ufSel}`
+    : paisSel ? `pais:${paisSel}`
+    : state.continente ? `cont:${state.continente}` : null;
+  if (naAba && mundo.enquadrado !== alvoMapa) {
     mundo.enquadrado = alvoMapa;
-    if (paisSel) mundo.enquadrar(paisSel);
+    if (multi.length) mundo.enquadrarEstados(multi.filter(u => UFS[u]));
+    else if (ufSel) mundo.enquadrarEstados([ufSel]);
+    else if (paisSel) mundo.enquadrar(paisSel);
     else if (state.continente) mundo.enquadrarCidades(cidadesDoContinente(state.continente));
     else mundo.resetar();
   }
@@ -1552,7 +1097,18 @@ function progressoHtml(r) {
 
 const MAX_CANDS = 4;
 
-function candidatosHtml(r) {
+// Diferença para o turno anterior, à esquerda do número: verde quando subiu, laranja quando caiu.
+function deltaHtml(agora, antes, pct = false) {
+  if (antes == null) return '';
+  const d = agora - antes;
+  const sinal = d > 0 ? '+' : d < 0 ? '−' : '±';
+  const valor = pct ? fmtPct(Math.abs(d)) : fmt.format(Math.abs(d));
+  return `<small class="delta${d > 0 ? ' mais' : d < 0 ? ' menos' : ''}">(${sinal}${valor})</small>`;
+}
+
+// antes: o resultado do turno anterior no mesmo lugar (na comparação), para mostrar a diferença.
+function candidatosHtml(r, ele = state.ele, antes = null) {
+  const doAntes = c => antes?.cands.find(x => x.n === c.n);
   const outros = r.cands.slice(MAX_CANDS);
   const somaOutros = outros.reduce((s, c) => s + c.votos, 0);
   const linhaOutros = outros.length > 1 ? `
@@ -1564,31 +1120,33 @@ function candidatosHtml(r) {
   const visiveis = outros.length > 1 ? r.cands.slice(0, MAX_CANDS) : r.cands;
   return `<ol class="cands">${visiveis.map(c => `
     <li class="cand">
-      ${fotoTag(state.ele, c, 'p')}
+      ${fotoTag(ele, c, 'p')}
       <div><div class="cand-nome">${esc(c.nome)}</div><div class="cand-partido">${esc(c.partido)} · ${esc(c.n)}</div></div>
-      <div><div class="cand-pct">${fmtPct(c.pct)}</div><div class="cand-votos">${fmt.format(c.votos)}</div></div>
+      <div><div class="cand-pct">${deltaHtml(c.pct, doAntes(c)?.pct, true)}${fmtPct(c.pct)}</div><div class="cand-votos">${deltaHtml(c.votos, doAntes(c)?.votos)}${fmt.format(c.votos)}</div></div>
       <div class="cand-barra"><span style="width:${c.pct}%;background:${corCand(c.n)}"></span></div>
     </li>`).join('')}${linhaOutros}</ol>`;
 }
 
-function statsHtml(r) {
+function statsHtml(r, antes = null) {
   const comp = r.comparecimento;
   const base = comp + r.abstencao;
   const p = (v, b) => (r.secoesTot && b ? `<small>${fmtPct(v / b * 100, 1)}</small>` : '');
+  const n = k => `${deltaHtml(r[k], antes?.[k])}${fmt.format(r[k])}`;
   return `<dl class="stats">
-    <div><dt>Eleitorado</dt><dd>${fmt.format(r.eleitorado)}</dd></div>
-    <div><dt>Votos válidos</dt><dd>${fmt.format(r.validos)}</dd></div>
-    <div><dt>Comparecimento</dt><dd>${fmt.format(comp)}${p(comp, base)}</dd></div>
-    <div><dt>Abstenção</dt><dd>${fmt.format(r.abstencao)}${p(r.abstencao, base)}</dd></div>
-    <div><dt>Brancos</dt><dd>${fmt.format(r.brancos)}${p(r.brancos, comp)}</dd></div>
-    <div><dt>Nulos</dt><dd>${fmt.format(r.nulos)}${p(r.nulos, comp)}</dd></div>
+    <div><dt>Eleitorado</dt><dd>${n('eleitorado')}</dd></div>
+    <div><dt>Votos válidos</dt><dd>${n('validos')}</dd></div>
+    <div><dt>Comparecimento</dt><dd>${n('comparecimento')}${p(comp, base)}</dd></div>
+    <div><dt>Abstenção</dt><dd>${n('abstencao')}${p(r.abstencao, base)}</dd></div>
+    <div><dt>Brancos</dt><dd>${n('brancos')}${p(r.brancos, comp)}</dd></div>
+    <div><dt>Nulos</dt><dd>${n('nulos')}${p(r.nulos, comp)}</dd></div>
   </dl>`;
 }
 
-function detalheHtml({ voltar, icone, titulo, sub, r, urnas = null }) {
+function detalheHtml({ voltar, icone, titulo, sub, r, urnas = null, comparar = false }) {
   const linhaUrnas = urnas && (!r || !r.validos) ? `<p class="urnas-linha">${marcaUrna(urnas)}<span>${textoUrnas(urnas)}</span></p>` : '';
   return `${voltar ? `<button type="button" class="lat-voltar" data-voltar>← ${esc(voltar)}</button>` : ''}
     <div class="lat-cab">${icone || ''}<div><h2 class="lat-titulo">${esc(titulo)}</h2>${sub ? `<p class="lat-sub">${sub}</p>` : ''}</div></div>
+    ${comparar ? '<p class="dica-soma"><button type="button" class="chip" data-comparar>Comparar 1º e 2º turno</button></p>' : ''}
     ${linhaUrnas}
     ${r ? progressoHtml(r) + candidatosHtml(r) + statsHtml(r) : '<p class="vazio">Carregando resultados…</p>'}`;
 }
@@ -1602,6 +1160,7 @@ function miniBarra(r) {
 }
 
 function liderPct(r, urnas = null) {
+  if ((!r || !r.validos) && urnas?.estado === 'sem-votacao') return `<span style="color:var(--ink-3)" title="${esc(TEXTO_SEM_VOTACAO)}">sem votação</span>`;
   if ((!r || !r.validos) && urnas) return `<span title="${esc(textoUrnas(urnas))}">${marcaUrna(urnas)}${horaBrasilia(urnas.fecha, dataEleicao())}</span>`;
   if (!r || !r.validos) return r ? '<span style="color:var(--ink-3)">—</span>' : '';
   const c = r.cands[0];
@@ -1614,25 +1173,26 @@ function vantagem(r) {
   return (votosDe(r, a.n) - votosDe(r, b.n)) / r.validos;
 }
 
-function ordenar(linhas) {
+function ordenar(linhas, ordem) {
   const por = {
     eleitorado: (x, y) => (y.r?.eleitorado ?? 0) - (x.r?.eleitorado ?? 0) || x.nome.localeCompare(y.nome, 'pt-BR'),
     vantagem: (x, y) => vantagem(y.r) - vantagem(x.r),
     nome: (x, y) => x.nome.localeCompare(y.nome, 'pt-BR'),
     fechamento: (x, y) => (x.urnas?.fecha ?? 0) - (y.urnas?.fecha ?? 0) || x.nome.localeCompare(y.nome, 'pt-BR'),
   };
-  return linhas.sort(por[ordemAtual()]);
+  return linhas.sort(por[ordem]);
 }
 
 const ROTULO_ORDEM = { eleitorado: 'eleitorado', vantagem: 'vantagem', fechamento: 'fechamento (Brasília)', nome: 'A–Z' };
 const PROXIMA_ORDEM = { eleitorado: 'vantagem', vantagem: 'fechamento', fechamento: 'nome', nome: 'eleitorado' };
 
-function listaHtml(titulo, linhas) {
+function listaHtml(titulo, linhas, padrao = 'eleitorado') {
   const [a] = duelo();
-  const dicaOrdem = ordemAtual() === 'vantagem' && a ? ` (${esc(a.nome)} primeiro)` : '';
+  const ordem = ordemAtual(padrao);
+  const dicaOrdem = ordem === 'vantagem' && a ? ` (${esc(a.nome)} primeiro)` : '';
   return `<div class="lista-cab"><h3>${esc(titulo)}</h3>
-      <button type="button" class="ordem" data-ordem>Ordem: ${ROTULO_ORDEM[ordemAtual()]}${dicaOrdem} ↕</button></div>
-    <ul class="linhas">${ordenar(linhas).map(l => `
+      <button type="button" class="ordem" data-ordem="${ordem}">Ordem: ${ROTULO_ORDEM[ordem]}${dicaOrdem} ↕</button></div>
+    <ul class="linhas">${ordenar(linhas, ordem).map(l => `
       <li><button type="button" class="linha${l.marcada ? ' marcada' : ''}" data-ir="${esc(l.id)}" data-tipo="${l.tipo}"${l.marcada != null ? ` aria-pressed="${l.marcada}"` : ''}>
         <span class="linha-ic${l.bandeira ? ' bandeira' : ''}">${l.icone}</span>
         <span class="linha-nome">${esc(l.nome)}${l.nota ? `<small>${esc(l.nota)}</small>` : ''}</span>
@@ -1645,11 +1205,11 @@ let chaveLateral = '';
 
 function renderLateral() {
   const el = $('#lateral');
-  const chave = `${state.ele}|${state.aba}|${state.sel}|${state.cidade}`;
+  const chave = `${state.ele}|${state.aba}|${state.sel}|${state.cidade}|${state.continente}|${state.multi.length > 0}`;
   if (chave !== chaveLateral) { chaveLateral = chave; el.scrollTop = 0; }
   if (!dados.br) { el.innerHTML = '<p class="vazio">Carregando resultados do TSE…</p>'; return; }
   const focoBusca = document.activeElement?.id === 'busca';
-  el.innerHTML = state.aba === 'estados' ? lateralEstados() : state.aba === 'exterior' ? lateralExterior() : lateralPresidios();
+  el.innerHTML = state.aba === 'presidios' ? lateralPresidios() : lateralMapa();
   if (focoBusca) {
     const b = $('#busca');
     b.focus();
@@ -1657,22 +1217,44 @@ function renderLateral() {
   }
 }
 
-function lateralEstados() {
+function lateralMapa() {
   if (state.multi.length) return painelSelecao();
-  if (state.local) return painelLocal();
-  if (state.bairro) return painelBairro();
-  if (state.zona != null) return painelZona();
-  if (state.mun) return painelMunicipio();
   if (state.sel && UFS[state.sel]) return painelEstado();
-  const linhas = Object.entries(UFS).map(([uf, nome]) => ({ id: uf, tipo: 'uf', icone: uf.toUpperCase(), nome, r: dados.ufs[uf] }));
-  const ext = `<li><button type="button" class="linha" data-ir-aba="exterior" data-uf="zz">
-      <span class="linha-ic bandeira">🌎</span><span class="linha-nome">Exterior<small>ver por país →</small></span>
-      ${miniBarra(dados.zz)}<span class="linha-pct">${liderPct(dados.zz)}</span></button></li>`;
-  return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Role ou belisque o mapa para aproximar: os estados abrem em municípios, e um município, em zonas eleitorais e locais de votação.</p></div></div>
-    ${botaoSomar()}
+  if (state.cidade || state.continente || (state.sel && COUNTRIES[state.sel])) return lateralExterior();
+  return painelGeral();
+}
+
+// Visão geral: o Brasil (regiões e estados) e o exterior (continentes e países), com uma busca para os dois.
+function painelGeral() {
+  const termo = normalizar(state.busca);
+  const acha = l => !termo || normalizar(l.nome).includes(termo);
+  const estados = Object.entries(UFS).map(([uf, nome]) => ({ id: uf, tipo: 'uf', icone: uf.toUpperCase(), nome, r: dados.ufs[uf] })).filter(acha);
+  const qtd = {};
+  for (const c of Object.values(dados.cidades)) qtd[c.pais] = (qtd[c.pais] ?? 0) + 1;
+  const paises = Object.entries(COUNTRIES)
+    .map(([id, p]) => ({ id, tipo: 'pais', icone: flagEmoji(p.iso2), bandeira: true, nome: p.nome, nota: qtd[id] > 1 ? `${qtd[id]} cidades` : '', r: dados.paises[id], urnas: urnasPais(id, dataEleicao()) }))
+    .filter(acha);
+  const zz = dados.zz;
+  return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Clique num estado ou país, no mapa ou na lista, para ver o resultado dele; num país, aparecem as cidades com seção eleitoral.</p></div></div>
     ${progressoHtml(dados.br)}
-    ${listaHtml('Por região', linhasRegioes())}
-    ${listaHtml('Estados', linhas).replace('</ul>', `${ext}</ul>`)}`;
+    ${botaoSomar()}
+    <input id="busca" class="busca" type="search" placeholder="Buscar estado ou país…" value="${esc(state.busca)}" autocomplete="off">
+    ${termo ? '' : listaHtml('Por região', linhasRegioes())}
+    ${listaHtml(`Estados (${estados.length})`, estados)}
+    <div class="lat-cab lat-secao"><span class="lat-uf">🌎</span><div><h2 class="lat-titulo">Exterior</h2><p class="lat-sub">Brasileiros votando fora do país</p></div></div>
+    ${zz ? progressoHtml(zz) + (zz.validos ? candidatosHtml(zz) : '') : ''}
+    ${zz && !zz.validos ? `<p class="urnas-resumo">${avisoExterior()}</p>` : ''}
+    ${termo ? '' : listaHtml('Por continente', linhasContinentes(), ordemExterior())}
+    ${listaHtml(`Países (${paises.length})`, paises, ordemExterior())}`;
+}
+
+function painelEstado() {
+  const uf = state.sel;
+  const regiao = Object.entries(REGIOES).find(([, reg]) => reg.ufs.includes(uf));
+  return detalheHtml({
+    voltar: 'Visão geral', icone: `<span class="lat-uf">${uf.toUpperCase()}</span>`, titulo: UFS[uf],
+    sub: `Estado · Região ${regiao[1].nome}`, r: dados.ufs[uf], urnas: urnasBrasil(dataEleicao()), comparar: true,
+  }) + botaoSomar() + listaHtml(`Região ${regiao[1].nome}`, regiao[1].ufs.map(u => ({ id: u, tipo: 'uf', icone: u.toUpperCase(), nome: UFS[u], r: dados.ufs[u], marcada: u === uf ? true : undefined })));
 }
 
 /* ----- soma de estados (Ctrl/⌘ + clique) ----- */
@@ -1690,24 +1272,25 @@ function botaoSomar() {
 // Um estado, ou vários de uma vez (uma região: se todos já estão, saem todos; senão, entram os que faltam).
 function alternarMulti(ids) {
   const lista = [].concat(ids);
-  let atual = state.multi.length ? [...state.multi] : (state.sel && UFS[state.sel] && !state.mun ? [state.sel] : []);
+  let atual = state.multi.length ? [...state.multi] : (state.sel && UFS[state.sel] ? [state.sel] : []);
   atual = lista.every(id => atual.includes(id)) ? atual.filter(x => !lista.includes(x)) : [...atual, ...lista.filter(id => !atual.includes(id))];
-  limparDetalhe();
   state.busca = '';
   // A soma vale desde o primeiro estado; vazia, volta para o Brasil.
   state.multi = atual;
   state.sel = null;
+  state.continente = null;
+  state.cidade = null;
   esconderTooltip();
   gravarHash();
   render();
-  agendarDetalhe();
 }
 
 function selecionarRegiao(id) {
   state.multi = [...REGIOES[id].ufs];
   state.sel = null;
+  state.continente = null;
+  state.cidade = null;
   state.busca = '';
-  limparDetalhe();
   esconderTooltip();
   gravarHash();
   render();
@@ -1736,106 +1319,12 @@ function painelSelecao() {
   }));
   const pctEleitorado = dados.br?.eleitorado ? (total.eleitorado / dados.br.eleitorado) * 100 : 0;
   return detalheHtml({
-    voltar: 'Brasil', icone: '<span class="lat-uf">Σ</span>', titulo,
+    voltar: 'Visão geral', icone: '<span class="lat-uf">Σ</span>', titulo,
     sub: `${esc(ids.map(nomeRecorte).join(', '))} · ${fmtPct(pctEleitorado, 1)} do eleitorado`,
     r: total,
   }) + `<p class="dica-soma"><button type="button" class="chip" data-limpar-soma>Limpar seleção</button>${botaoSomar().replace(/^<p class="dica-soma">|<\/p>$/g, '')}</p>`
     + listaHtml('Regiões · Ctrl/⌘ + clique inclui ou tira', linhasRegioes())
     + listaHtml('Estados · Ctrl/⌘ + clique inclui ou tira', linhas);
-}
-
-const MAX_LINHAS = 200;
-
-function cortarLista(linhas, titulo) {
-  const termo = normalizar(state.busca);
-  const filtradas = linhas.filter(l => !termo || normalizar(l.nome).includes(termo));
-  const extra = filtradas.length > MAX_LINHAS ? `<p class="vazio">Mostrando ${MAX_LINHAS} de ${filtradas.length}; use a busca para achar os outros.</p>` : '';
-  const ordenadas = ordenar(filtradas).slice(0, MAX_LINHAS);
-  return `<input id="busca" class="busca" type="search" placeholder="Buscar…" value="${esc(state.busca)}" autocomplete="off">`
-    + listaHtml(titulo, ordenadas) + extra;
-}
-
-function painelEstado() {
-  const uf = state.sel;
-  const geo = geoMun[uf];
-  const linhas = geo ? geo.features.map(f => ({ id: f.properties.cd, tipo: 'mun', icone: '', nome: f.properties.nome, r: resultadoMun(uf, f.properties.cd) })) : [];
-  return detalheHtml({ voltar: 'Brasil', icone: `<span class="lat-uf">${uf.toUpperCase()}</span>`, titulo: UFS[uf], sub: 'Estado · aproxime o mapa ou escolha um município', r: dados.ufs[uf] })
-    + (geo ? cortarLista(linhas, `Municípios (${linhas.length})`) : '<p class="vazio">Carregando os municípios…</p>');
-}
-
-function avisoBoletins() {
-  return urnasBrasil(dataEleicao()).estado === 'fechada'
-    ? '<p class="urnas-resumo">Bairros e locais não têm total na API do TSE: o resultado deles soma os boletins de urna de cada seção, carregados quando você clica.</p>'
-    : '<p class="urnas-resumo">Bairros e locais somam os boletins de urna de cada seção, que só saem depois das 17h de Brasília.</p>';
-}
-
-function painelMunicipio() {
-  const f = featureMun(state.mun);
-  const lm = locaisMun[state.mun];
-  if (!f) return '<p class="vazio">Carregando o município…</p>';
-  const uf = f.uf;
-  const ix = dados.cache.get(`idx:${uf}`)?.[state.mun];
-  let html = detalheHtml({
-    voltar: UFS[uf], icone: `<span class="lat-uf">${uf.toUpperCase()}</span>`, titulo: f.properties.nome,
-    sub: `Município · ${UFS[uf]}${lm ? ` · ${lm.zonas.length} ${lm.zonas.length > 1 ? 'zonas' : 'zona'}, ${lm.locais.length} locais de votação` : ''}`,
-    r: resultadoMun(uf, state.mun), urnas: urnasBrasil(dataEleicao()),
-  });
-  if (!lm) return `${html}<p class="vazio">Carregando zonas e locais…</p>`;
-  if (lm.zonas.length > 1) {
-    html += listaHtml(`Zonas eleitorais (${lm.zonas.length})`, lm.zonas.map(z => ({
-      id: String(z), tipo: 'zona', icone: 'Z', nome: `Zona ${z}`, nota: `${lm.locais.filter(l => l.z === z).length} locais`, r: resultadoZona(state.mun, z),
-    })));
-  }
-  const bairros = [...lm.bairros.entries()].map(([b, ls]) => ({
-    id: b, tipo: 'bairro', icone: '•', nome: nomeLocal(b), nota: `${ls.length} ${ls.length > 1 ? 'locais' : 'local'}`,
-    r: (() => { const r = resultadoSecoes(secoesDeLocais(ls)); return r?.secoesTot === r?.secoes ? r : { ...r, eleitorado: ls.reduce((a, l) => a + l.el, 0), validos: 0 }; })(),
-  }));
-  return html + avisoBoletins() + cortarLista(bairros, `Bairros (${bairros.length})`);
-}
-
-function linhasLocais(locais) {
-  return locais.map(l => {
-    const r = resultadoSecoes(secoesDeLocais([l]));
-    return { id: l.id, tipo: 'local', icone: '•', nome: nomeLocal(l.n), nota: `zona ${l.z}`, r: r?.validos ? r : { ...r, eleitorado: l.el, validos: 0 } };
-  });
-}
-
-function painelZona() {
-  const lm = locaisMun[state.mun];
-  const f = featureMun(state.mun);
-  if (!lm || !f) return '<p class="vazio">Carregando a zona…</p>';
-  const locais = lm.locais.filter(l => l.z === state.zona);
-  return detalheHtml({
-    voltar: f.properties.nome, icone: '<span class="lat-uf">Z</span>', titulo: `Zona ${state.zona}`,
-    sub: `Zona eleitoral · ${esc(f.properties.nome)}/${f.uf.toUpperCase()} · ${locais.length} locais de votação. A área no mapa é aproximada.`,
-    r: resultadoZona(state.mun, state.zona), urnas: urnasBrasil(dataEleicao()),
-  }) + avisoBoletins() + cortarLista(linhasLocais(locais), `Locais de votação (${locais.length})`);
-}
-
-function painelBairro() {
-  const lm = locaisMun[state.mun];
-  const f = featureMun(state.mun);
-  if (!lm || !f) return '<p class="vazio">Carregando o bairro…</p>';
-  const locais = lm.bairros.get(state.bairro) ?? [];
-  const secoes = secoesDeLocais(locais);
-  return detalheHtml({
-    voltar: f.properties.nome, icone: '<span class="lat-uf">B</span>', titulo: nomeLocal(state.bairro),
-    sub: `Bairro · ${esc(f.properties.nome)}/${f.uf.toUpperCase()} · ${locais.length} locais, ${secoes.length} seções. Soma dos boletins de urna.`,
-    r: resultadoSecoes(secoes), urnas: urnasBrasil(dataEleicao()),
-  }) + cortarLista(linhasLocais(locais), `Locais de votação (${locais.length})`);
-}
-
-function painelLocal() {
-  const lm = locaisMun[state.mun];
-  const l = lm?.porId.get(state.local);
-  if (!l) return '<p class="vazio">Carregando o local…</p>';
-  const secoes = secoesDeLocais([l]);
-  const voltar = state.bairro ? nomeLocal(state.bairro) : state.zona != null ? `Zona ${state.zona}` : featureMun(state.mun)?.properties.nome;
-  return detalheHtml({
-    voltar, icone: '<span class="lat-uf">L</span>', titulo: nomeLocal(l.n),
-    sub: `${esc(nomeLocal(l.e || ''))}${l.b ? ` · ${esc(nomeLocal(l.b))}` : ''} · zona ${l.z} · seções ${l.s.join(', ')} · ${fmt.format(l.el)} eleitores`,
-    r: resultadoSecoes(secoes), urnas: urnasBrasil(dataEleicao()),
-  }) + (l.xy ? '' : '<p class="urnas-resumo">O cadastro do TSE não traz as coordenadas deste local.</p>');
 }
 
 // Cidades do exterior por continente (Caiena e Saint-Georges na América do Sul, não na Europa).
@@ -1875,10 +1364,10 @@ function painelContinente() {
     nota: doPais.length > 1 ? `${doPais.length} cidades` : '', r: resultadoCidades(doPais), urnas: urnasCidades(doPais, dataEleicao()),
   }));
   return detalheHtml({
-    voltar: 'Exterior', icone: '<span class="lat-uf">🌐</span>', titulo: CONTINENTES[cont],
+    voltar: 'Visão geral', icone: '<span class="lat-uf">🌐</span>', titulo: CONTINENTES[cont],
     sub: `${porPais.size} ${porPais.size > 1 ? 'países' : 'país'} · ${cds.length} ${cds.length > 1 ? 'cidades' : 'cidade'} com seção eleitoral`,
     r: resultadoCidades(cds), urnas: urnasCidades(cds, dataEleicao()),
-  }) + listaHtml(`Países (${porPais.size})`, linhas);
+  }) + listaHtml(`Países (${porPais.size})`, linhas, ordemExterior());
 }
 
 function lateralExterior() {
@@ -1897,28 +1386,18 @@ function lateralExterior() {
     const cds = cidades.map(c => c.cd);
     const sub = cidades.length ? `${cidades.length} ${cidades.length > 1 ? 'cidades' : 'cidade'} com seção eleitoral${cont ? ` · ${CONTINENTES[cont]}` : ''}` : '';
     let html = detalheHtml({
-      voltar: cont ? CONTINENTES[cont] : 'Todos os países', icone: `<span class="lat-bandeira">${flagEmoji(p.iso2)}</span>`,
+      voltar: cont ? CONTINENTES[cont] : 'Visão geral', icone: `<span class="lat-bandeira">${flagEmoji(p.iso2)}</span>`,
       titulo: cont ? nomePaisNoContinente(state.sel, cont) : p.nome, sub,
       r: cont ? resultadoCidades(cds) : dados.paises[state.sel],
       urnas: cont ? urnasCidades(cds, dataEleicao()) : urnasPais(state.sel, dataEleicao()),
+      comparar: true,
     });
     if (cidades.length > 1) {
       html += listaHtml('Cidades', cidades.map(c => ({ id: c.cd, tipo: 'cidade', icone: '•', nome: c.nome, r: c.r, urnas: urnasCidade(c.cd, dataEleicao()) })));
     }
     return html;
   }
-  const qtd = {};
-  for (const c of Object.values(dados.cidades)) qtd[c.pais] = (qtd[c.pais] ?? 0) + 1;
-  const termo = normalizar(state.busca);
-  const linhas = Object.entries(COUNTRIES)
-    .filter(([, p]) => !termo || normalizar(p.nome).includes(termo))
-    .map(([id, p]) => ({ id, tipo: 'pais', icone: flagEmoji(p.iso2), bandeira: true, nome: p.nome, nota: qtd[id] > 1 ? `${qtd[id]} cidades` : '', r: dados.paises[id], urnas: urnasPais(id, dataEleicao()) }));
-  const semVotos = dados.zz && !dados.zz.validos;
-  return detalheHtml({ voltar: 'Estados', titulo: 'Exterior', sub: 'Brasileiros votando fora do país', r: dados.zz })
-    + (semVotos ? `<p class="urnas-resumo">${avisoExterior()}</p>` : '')
-    + listaHtml('Por continente', linhasContinentes())
-    + `<input id="busca" class="busca" type="search" placeholder="Buscar país…" value="${esc(state.busca)}" autocomplete="off">`
-    + listaHtml(`Países (${Object.keys(COUNTRIES).length})`, linhas);
+  return painelGeral();
 }
 
 function lateralPresidios() {
@@ -1962,14 +1441,99 @@ function lateralPresidios() {
 
 const normalizar = s => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 
-/* ---------------- interação ---------------- */
+/* ---------------- comparar 1º e 2º turno ---------------- */
 
-function limparDetalhe() {
-  state.mun = null;
-  state.zona = null;
-  state.bairro = null;
-  state.local = null;
+// Popup com as fichas dos dois turnos lado a lado, para o estado ou país aberto no painel. O turno que está
+// na tela vem do que já foi carregado; o outro sai do cache dele e só consulta o TSE pelo que falta (o 1º
+// turno, encerrado, vem uma vez e fica guardado).
+const TURNOS = ['6257', '6258'];
+const dialogo = $('#comparar');
+let pedidoComparacao = 0;
+
+// Cidades do país (aberto de dentro de um continente: só as daquele continente).
+const cidadesDoPais = (id, cont) => Object.keys(CITIES).filter(cd => CITIES[cd][0] === id && (!cont || continenteDaCidade(cd) === cont));
+
+// Baixa um resultado do outro turno para a comparação: pronto não baixa mais; em andamento, no máximo uma
+// vez por minuto (como o ciclo); e o mesmo pedido em andamento é reaproveitado se o popup for reaberto.
+const emVooComparacao = new Map();
+
+function baixarParaComparar(ele, cache, id, buscar) {
+  const atual = cache.get(id);
+  if (pronto(atual) || (atual?.baixadoEm && Date.now() - atual.baixadoEm < INTERVALO)) return null;
+  const chave = `${ele}|${id}`;
+  if (!emVooComparacao.has(chave)) {
+    emVooComparacao.set(chave, buscar().then(r => guardar(cache, id, r)).finally(() => emVooComparacao.delete(chave)));
+  }
+  return emVooComparacao.get(chave);
 }
+
+async function fichaDoTurno(ele, alvo) {
+  if (ele === dados.ele) return alvo.uf ? dados.ufs[alvo.uf] ?? null : resultadoCidades(alvo.cds);
+  const cache = Cache.da(ele);
+  const d = ELEICOES[ele].data;
+  if (!cache.get('br')) await baixarParaComparar(ele, cache, 'br', () => fetchResultado(ele, 'br'));
+  const modelo = cache.get('br');
+  // Pelo relógio, onde a urna ainda não fechou não há o que baixar.
+  if (alvo.uf) {
+    if (urnasBrasil(d).estado === 'fechada') await baixarParaComparar(ele, cache, alvo.uf, () => fetchResultado(ele, alvo.uf));
+    return cache.get(alvo.uf) ?? null;
+  }
+  const vazio = resultadoVazio({ versao: '', eleitorado: 0, secoes: 0, andamento: 'n' }, modelo);
+  const rs = await Promise.all(alvo.cds.map(async cd => {
+    const id = `zz:${cd}`;
+    const u = urnasCidade(cd, d);
+    // Cidade sem votação (menos de 30 eleitores) entra zerada, sem consulta: não derruba a soma do país.
+    if (u.estado === 'sem-votacao') return cache.get(id) ?? vazio;
+    if (u.estado === 'fechada') await baixarParaComparar(ele, cache, id, () => fetchResultado(ele, 'zz', cd));
+    return maisCompleto(cache.get(id) ?? null, boletinsExterior([cd], cache, modelo));
+  }));
+  return rs.length && rs.every(Boolean) ? somarCidades(rs) : null;
+}
+
+// antes: a ficha do 1º turno, quando esta é a do 2º (as diferenças aparecem ao lado de cada número).
+function fichaHtml(ele, f, antes = null) {
+  const e = ELEICOES[ele];
+  const [ano, mes, dia] = e.data.split('-');
+  const cab = `<h3 class="cmp-turno">${e.nome}<small>${dia}/${mes}/${ano}</small></h3>`;
+  if (!f) return `${cab}<p class="vazio">Carregando…</p>`;
+  if (f.erro) return `${cab}<p class="vazio">${f.erro}</p>`;
+  if (!f.r?.validos) return `${cab}<p class="vazio">Sem votos apurados ainda.</p>`;
+  const base = antes?.r?.validos ? antes.r : null;
+  return cab + progressoHtml(f.r) + candidatosHtml(f.r, ele, base) + statsHtml(f.r, base);
+}
+
+async function abrirComparacao() {
+  const uf = UFS[state.sel] ? state.sel : null;
+  const pais = COUNTRIES[state.sel] ? state.sel : null;
+  if (!uf && !pais) return;
+  const alvo = uf ? { uf } : { cds: cidadesDoPais(pais, state.continente) };
+  const titulo = uf ? UFS[uf] : state.continente ? nomePaisNoContinente(pais, state.continente) : COUNTRIES[pais].nome;
+  const icone = uf ? `<span class="lat-uf">${uf.toUpperCase()}</span>` : `<span class="lat-bandeira">${flagEmoji(COUNTRIES[pais].iso2)}</span>`;
+  const pedido = ++pedidoComparacao;
+  const fichas = {};
+  const desenhar = () => {
+    dialogo.innerHTML = `<div class="cmp-cab">${icone}<h2 class="lat-titulo" id="cmp-titulo">${esc(titulo)}</h2>
+        <button type="button" class="cmp-fechar" data-fechar aria-label="Fechar">×</button></div>
+      <div class="cmp-grade">${TURNOS.map((ele, i) => `<section>${fichaHtml(ele, fichas[ele], i ? fichas[TURNOS[i - 1]] : null)}</section>`).join('')}</div>`;
+  };
+  desenhar();
+  if (!dialogo.open) dialogo.showModal();
+  await Promise.all(TURNOS.map(async ele => {
+    try {
+      fichas[ele] = { r: await fichaDoTurno(ele, alvo) };
+    } catch (err) {
+      fichas[ele] = { erro: err instanceof LimiteTSE ? 'O TSE limitou as consultas; tente de novo em alguns minutos.' : 'Não foi possível carregar este turno.' };
+    }
+    Cache.da(ele).salvar();
+    if (pedido === pedidoComparacao && dialogo.open) desenhar();
+  }));
+}
+
+dialogo.addEventListener('click', ev => {
+  if (ev.target === dialogo || ev.target.closest('[data-fechar]')) dialogo.close();
+});
+
+/* ---------------- interação ---------------- */
 
 function selecionar(id) {
   state.sel = id;
@@ -1977,11 +1541,9 @@ function selecionar(id) {
   state.continente = null;
   state.cidade = null;
   state.busca = '';
-  limparDetalhe();
   esconderTooltip();
   gravarHash();
   render();
-  if (state.aba === 'estados') agendarDetalhe();
 }
 
 function irPara(mudancas) {
@@ -1990,38 +1552,13 @@ function irPara(mudancas) {
   esconderTooltip();
   gravarHash();
   render();
-  agendarDetalhe();
 }
 
-function selecionarMun(uf, cd) {
-  irPara({ sel: uf, mun: cd, zona: null, bairro: null, local: null });
-}
-
-function selecionarZona(z) {
-  if (!state.mun) { const f = municipioEmFoco(); if (!f) return; state.sel = f.uf; state.mun = f.properties.cd; }
-  irPara({ zona: Number(z), bairro: null, local: null });
-}
-
-function selecionarBairro(b) {
-  irPara({ bairro: b, zona: null, local: null });
-  const lm = locaisMun[state.mun];
-  if (lm) carregarBoletins(secoesDeLocais(lm.bairros.get(b) ?? []));
-}
-
-function selecionarLocal(id) {
-  if (!state.mun) { const f = municipioEmFoco(); if (!f) return; state.sel = f.uf; state.mun = f.properties.cd; }
-  irPara({ local: id });
-  const l = locaisMun[state.mun]?.porId.get(id);
-  if (l) carregarBoletins(secoesDeLocais([l]));
-}
-
-// Volta um nível: local → bairro/zona → município → estado → Brasil.
-function subirNivel() {
-  if (state.multi.length) selecionar(null);
-  else if (state.local) irPara({ local: null });
-  else if (state.bairro || state.zona != null) irPara({ bairro: null, zona: null });
-  else if (state.mun) irPara({ mun: null });
-  else if (state.sel) selecionar(null);
+// Volta um nível: cidade → país → continente → visão geral; estado, soma e presídio → visão geral.
+function voltar() {
+  if (state.cidade) irPara({ cidade: null });
+  else if (state.sel && COUNTRIES[state.sel] && state.continente) irPara({ sel: null });
+  else if (state.sel || state.continente || state.multi.length) selecionar(null);
 }
 
 function selecionarCidade(cd) {
@@ -2041,7 +1578,6 @@ function trocarAba(aba) {
   state.somando = false;
   state.continente = null;
   state.cidade = null;
-  limparDetalhe();
   state.busca = '';
   gravarHash();
   render();
@@ -2054,7 +1590,7 @@ function ativarAba(aba) {
     dados.querPresidios = true;
     reavaliar();
   }
-  if (aba === 'exterior' && !dados.querCidades) {
+  if (aba === 'mapa' && !dados.querCidades) {
     dados.querCidades = true;
     reavaliar();
   }
@@ -2065,7 +1601,7 @@ function trocarEleicao(ele) {
   state.ele = ele;
   dados = novosDados(ele);
   aplicarCache();
-  dados.querCidades = state.aba === 'exterior';
+  dados.querCidades = state.aba === 'mapa';
   dados.querPresidios = state.aba === 'presidios';
   if (mundo) mundo.enquadrado = undefined;
   gravarHash();
@@ -2074,14 +1610,14 @@ function trocarEleicao(ele) {
 }
 
 function realcar(id, ligado) {
-  const svgSel = { estados: '#mapa-estados', exterior: '#mapa-mundo', presidios: '#mapa-presidios' }[state.aba];
+  const svgSel = state.aba === 'presidios' ? '#mapa-presidios' : '#mapa-mundo';
   document.querySelectorAll(`${svgSel} [data-id="${CSS.escape(id)}"]`).forEach(n => n.classList.toggle('sel', ligado || n.dataset.id === state.sel || state.multi.includes(n.dataset.id)));
 }
 
-// Ctrl/⌘ + clique (ou modo soma) numa linha de estado ou do exterior: entra/sai da soma.
+// Ctrl/⌘ + clique (ou modo soma) numa linha de estado, região ou do exterior: entra/sai da soma.
 function cliqueDeSoma(ev, t) {
-  if (state.aba !== 'estados' || !somar_(ev)) return false;
-  const id = t.dataset.uf ?? (t.dataset.tipo === 'uf' ? t.dataset.ir : t.dataset.tipo === 'regiao' ? REGIOES[t.dataset.ir]?.ufs : null);
+  if (state.aba !== 'mapa' || !somar_(ev)) return false;
+  const id = t.dataset.tipo === 'uf' ? t.dataset.ir : t.dataset.tipo === 'regiao' ? REGIOES[t.dataset.ir]?.ufs : null;
   if (!id) return false;
   ev.preventDefault();
   alternarMulti(id);
@@ -2099,25 +1635,18 @@ document.addEventListener('click', ev => {
   if (cliqueDeSoma(ev, t)) return;
   if (t.hasAttribute('data-somar')) { state.somando = !state.somando; renderLateral(); return; }
   if (t.hasAttribute('data-limpar-soma')) { state.somando = false; selecionar(null); return; }
+  if (t.hasAttribute('data-comparar')) { abrirComparacao(); return; }
   if (t.dataset.ele) trocarEleicao(t.dataset.ele);
-  else if (t.dataset.irEle) trocarEleicao(t.dataset.irEle);
   else if (t.dataset.aba) trocarAba(t.dataset.aba);
-  else if (t.dataset.irAba) trocarAba(t.dataset.irAba);
-  else if (t.hasAttribute('data-ordem')) { state.ordem = PROXIMA_ORDEM[ordemAtual()]; renderLateral(); }
-  else if (t.hasAttribute('data-voltar')) {
-    if (state.aba === 'estados') subirNivel();
-    else voltarExterior();
-  } else if (t.dataset.ir) {
+  else if (t.hasAttribute('data-ordem')) { state.ordem = PROXIMA_ORDEM[t.dataset.ordem] ?? 'eleitorado'; renderLateral(); }
+  else if (t.hasAttribute('data-voltar')) voltar();
+  else if (t.dataset.ir) {
     const tipo = t.dataset.tipo;
     if (tipo === 'cidade') selecionarCidade(t.dataset.ir);
-    else if (tipo === 'mun') selecionarMun(state.sel, t.dataset.ir);
-    else if (tipo === 'zona') selecionarZona(t.dataset.ir);
-    else if (tipo === 'bairro') selecionarBairro(t.dataset.ir);
-    else if (tipo === 'local') selecionarLocal(t.dataset.ir);
     else if (tipo === 'regiao') selecionarRegiao(t.dataset.ir);
     else if (tipo === 'continente') selecionarContinente(t.dataset.ir);
     else if (tipo === 'pais' && state.continente) irPara({ sel: t.dataset.ir, cidade: null });
-    else if (t.dataset.ir === 'zz') trocarAba('exterior');
+    else if (t.dataset.ir === 'zz') selecionar(null); // o exterior está na visão geral
     else selecionar(t.dataset.ir);
   }
 });
@@ -2127,7 +1656,7 @@ document.addEventListener('click', ev => {
 function membrosDaLinha(t) {
   if (t.dataset.tipo === 'regiao') return REGIOES[t.dataset.ir]?.ufs ?? [];
   if (t.dataset.tipo === 'continente') return paisesDoContinente(t.dataset.ir);
-  if (['cidade', 'zona', 'bairro'].includes(t.dataset.tipo)) return [];
+  if (t.dataset.tipo === 'cidade') return [];
   return [t.dataset.ir];
 }
 $('#lateral').addEventListener('mouseover', ev => {
@@ -2146,20 +1675,33 @@ $('#lateral').addEventListener('input', ev => {
 });
 
 document.addEventListener('keydown', ev => {
-  if (ev.key !== 'Escape') return;
-  if (state.aba === 'estados') subirNivel();
-  else voltarExterior();
+  // Com o popup aberto, o Esc fecha só o popup (o navegador cuida disso).
+  if (ev.key === 'Escape' && !dialogo.open) voltar();
 });
 
-// Exterior e presídios: cidade → país → continente → lista; da lista do exterior, para Estados.
-function voltarExterior() {
-  if (state.cidade) irPara({ cidade: null });
-  else if (state.sel && state.continente) irPara({ sel: null });
-  else if (state.sel || state.continente) selecionar(null);
-  else if (state.aba === 'exterior') trocarAba('estados');
+// Tema claro/escuro: segue o sistema até alguém escolher no botão; a escolha fica guardada.
+const temaDoSistema = matchMedia('(prefers-color-scheme: dark)');
+const ICONE_LUA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+const ICONE_SOL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const temaEscuro = () => (document.documentElement.dataset.tema ?? (temaDoSistema.matches ? 'escuro' : 'claro')) === 'escuro';
+
+function renderTema() {
+  const escuro = temaEscuro();
+  const botao = $('#tema');
+  botao.innerHTML = escuro ? ICONE_SOL : ICONE_LUA;
+  botao.setAttribute('aria-label', escuro ? 'Usar tema claro' : 'Usar tema escuro');
+  botao.title = botao.getAttribute('aria-label');
 }
 
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+$('#tema').addEventListener('click', () => {
+  const tema = temaEscuro() ? 'claro' : 'escuro';
+  document.documentElement.dataset.tema = tema;
+  try { localStorage.setItem('tse-tema', tema); } catch { /* sem localStorage: vale só nesta visita */ }
+  renderTema();
+  render(); // as cores do mapa são lidas do CSS
+});
+temaDoSistema.addEventListener('change', () => { renderTema(); render(); });
+renderTema();
 
 // Link colado na mesma aba (só o # muda): relê a URL e segue dali.
 window.addEventListener('hashchange', () => {
@@ -2174,25 +1716,17 @@ window.addEventListener('hashchange', () => {
   if (mundo) mundo.enquadrado = undefined;
   render();
   ativarAba(state.aba);
-  if (state.aba === 'estados') agendarDetalhe();
 });
 
 /* ---------------- início ---------------- */
 
 lerHash();
+gravarHash(); // links antigos (aba=estados, aba=exterior) passam a apontar para a aba Mapa
 dados = novosDados(state.ele);
 aplicarCache();
-dados.querCidades = state.aba === 'exterior';
+dados.querCidades = state.aba === 'mapa';
 dados.querPresidios = state.aba === 'presidios';
 render();
-await Promise.all([montarEstados(), montarMundo(), montarPresidios()]);
+await Promise.all([montarMundo(), montarPresidios()]);
 aplicarCache();
-if (state.aba === 'estados') agendarDetalhe();
 ciclo();
-// Abriu direto num local ou bairro (link compartilhado): carrega os boletins dele.
-if (state.aba === 'estados' && state.mun && (state.local || state.bairro)) {
-  const f = await carregarGeoMun(state.sel).then(() => featureMun(state.mun));
-  const lm = f ? await carregarLocais(f.uf, state.mun) : null;
-  if (lm) carregarBoletins(secoesDeLocais(state.local ? [lm.porId.get(state.local)].filter(Boolean) : lm.bairros.get(state.bairro) ?? []));
-  render();
-}

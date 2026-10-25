@@ -18,12 +18,15 @@
   --cand-outro: #8a8983;
   --sel: #0b0b0b;
   --focus: #2a78d6;
+  --mais: #1e8a4a;
+  --menos: #d4700a;
   --serif: ui-serif, "Iowan Old Style", "Charter", "Georgia", serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Escuro: pelo sistema, a menos que o botão de tema tenha escolhido claro; ou escolhido no botão. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-tema="claro"]) {
     color-scheme: dark;
     --bg: #121211;
     --surface: #1a1a19;
@@ -36,14 +39,39 @@
     --land-line: #1a1a19;
     --ocean: #1a1a19;
     --nodata: #44443f;
-  --fechada: #8a8981;
+    --fechada: #8a8981;
     --mid: #383835;
     --cand-13: #e66767;
     --cand-22: #3987e5;
     --cand-outro: #8f8e86;
     --sel: #f0efec;
     --focus: #3987e5;
+    --mais: #4cc27e;
+    --menos: #f29a4a;
   }
+}
+:root[data-tema="escuro"] {
+  color-scheme: dark;
+  --bg: #121211;
+  --surface: #1a1a19;
+  --surface-2: #232321;
+  --line: #34342f;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --ink-3: #8f8e86;
+  --land: #2a2a27;
+  --land-line: #1a1a19;
+  --ocean: #1a1a19;
+  --nodata: #44443f;
+  --fechada: #8a8981;
+  --mid: #383835;
+  --cand-13: #e66767;
+  --cand-22: #3987e5;
+  --cand-outro: #8f8e86;
+  --sel: #f0efec;
+  --focus: #3987e5;
+  --mais: #4cc27e;
+  --menos: #f29a4a;
 }
 
 * { box-sizing: border-box; }
@@ -85,6 +113,13 @@ h1 {
   letter-spacing: -.01em;
 }
 .topo-controles { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.topo-linha { display: flex; align-items: center; gap: 8px; }
+.tema {
+  display: grid; place-items: center; width: 36px; height: 36px; padding: 0;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--surface-2); color: var(--ink-2); cursor: pointer;
+}
+.tema:hover { color: var(--ink); border-color: var(--ink-3); }
+.tema svg { width: 17px; height: 17px; }
 .status { margin: 0; font-size: 13px; color: var(--ink-2); text-align: right; }
 .status .pulso {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -105,21 +140,6 @@ h1 {
   padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--ink-2);
 }
 .segmentado button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
-
-.aviso {
-  margin: 16px clamp(16px, 4vw, 48px) 0;
-  padding: 12px 16px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--ink);
-  border-radius: 8px;
-  background: var(--surface);
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  font-size: 14px;
-}
-.aviso button {
-  border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px;
-  padding: 5px 14px; cursor: pointer; font-weight: 600; font-size: 13px;
-}
 
 /* ---------- placar nacional ---------- */
 
@@ -361,7 +381,6 @@ h1 {
   .status { text-align: left; }
 }
 
-#mapa-estados svg { max-height: min(72vh, 640px); margin: 0 auto; }
 .regiao.ativa.sel { stroke-width: 2.2; }
 [hidden] { display: none !important; }
 
@@ -385,15 +404,7 @@ h1 {
 .linha.estatica:hover { background: none; }
 .lat-uf { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--ink-2); }
 
-.regiao.mun { stroke-width: .35; }
-.regiao.aberto { stroke: none; }
-.bordas-uf path { fill: none; stroke: var(--ink-3); stroke-width: .9; vector-effect: non-scaling-stroke; pointer-events: none; }
-.celula-zona { stroke: none; cursor: pointer; transition: fill .4s ease; }
-.celula-zona.sel { fill-opacity: .85; }
-.bordas-zona path { fill: none; stroke: var(--surface); stroke-width: 1.4; vector-effect: non-scaling-stroke; pointer-events: none; }
-.local { stroke: var(--ink-2); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
-.local:hover, .local.sel { stroke: var(--sel); stroke-width: 2.2; }
-.rotulo-mun { font: 600 11px var(--sans); fill: var(--ink); paint-order: stroke; stroke: var(--surface); stroke-linejoin: round; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.lat-secao { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); }
 
 .dica-soma { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 10px 0 0; font-size: 12.5px; color: var(--ink-2); }
 .chip { border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
@@ -402,3 +413,27 @@ h1 {
 
 .linha.marcada { background: color-mix(in srgb, var(--ink) 8%, transparent); box-shadow: inset 3px 0 0 var(--ink); }
 .linha.marcada .linha-nome { font-weight: 700; }
+
+/* ---------- comparar 1º e 2º turno ---------- */
+.comparar {
+  width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 20px 24px 24px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink);
+  box-shadow: 0 20px 60px rgb(0 0 0 / .25);
+}
+.comparar::backdrop { background: rgb(0 0 0 / .45); }
+.cmp-cab { display: flex; align-items: center; gap: 10px; }
+.cmp-cab .lat-titulo { flex: 1; }
+.cmp-fechar { border: 0; background: none; font-size: 28px; line-height: 1; color: var(--ink-2); cursor: pointer; padding: 0 4px; }
+.cmp-fechar:hover { color: var(--ink); }
+.cmp-grade { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 16px; }
+.cmp-grade section + section { border-left: 1px solid var(--line); padding-left: 28px; }
+.cmp-turno { display: flex; align-items: baseline; justify-content: space-between; margin: 0; font: 600 18px var(--serif); }
+.cmp-turno small { font: 500 12.5px var(--sans); color: var(--ink-2); }
+@media (max-width: 640px) {
+  .cmp-grade { grid-template-columns: 1fr; }
+  .cmp-grade section + section { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 18px; }
+}
+.delta { margin-right: 6px; font-size: 11.5px; font-weight: 600; color: var(--ink-3); }
+.delta.mais { color: var(--mais); }
+.delta.menos { color: var(--menos); }
+.stats dd small.delta { margin: 0 6px 0 0; }

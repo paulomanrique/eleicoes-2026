@@ -3,6 +3,15 @@ import { CITIES, FUSOS } from './exterior.js';
 
 const BRASILIA = 'America/Sao_Paulo';
 
+// No exterior, seção só é instalada onde há pelo menos 30 eleitores (Código Eleitoral, art. 226). As cidades
+// abaixo disso não têm votação: não entram no relógio, nos fechamentos nem na espera por resultado.
+export const MINIMO_ELEITORES = 30;
+let semVotacao = new Set();
+
+export function definirSemVotacao(cds) {
+  semVotacao = new Set(cds);
+}
+
 function offsetMs(tz, instante) {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
     timeZone: tz, hourCycle: 'h23',
@@ -36,6 +45,7 @@ export function urnasCidade(cd, dataISO, agora = Date.now()) {
   if (!tz) return null;
   const abre = horaLocal(dataISO, 8, tz);
   const fecha = horaLocal(dataISO, 17, tz);
+  if (semVotacao.has(cd)) return { abre, fecha, estado: 'sem-votacao' };
   return { abre, fecha, estado: agora < abre ? 'antes' : agora < fecha ? 'votando' : 'fechada' };
 }
 
@@ -44,10 +54,13 @@ export function urnasPais(id, dataISO, agora = Date.now()) {
   return urnasCidades(Object.keys(CITIES).filter(cd => CITIES[cd][0] === id), dataISO, agora);
 }
 
-// Situação de um grupo de cidades (país, continente): "fechada" só quando todas fecharam.
+// Situação de um grupo de cidades (país, continente): "fechada" só quando todas fecharam. As cidades sem
+// votação não contam; um grupo só delas fica "sem-votacao".
 export function urnasCidades(cds, dataISO, agora = Date.now()) {
-  const cidades = cds.map(cd => urnasCidade(cd, dataISO, agora)).filter(Boolean);
-  if (!cidades.length) return null;
+  const todas = cds.map(cd => urnasCidade(cd, dataISO, agora)).filter(Boolean);
+  if (!todas.length) return null;
+  const cidades = todas.filter(c => c.estado !== 'sem-votacao');
+  if (!cidades.length) return { ...todas[0], estado: 'sem-votacao', fechadas: 0, total: 0 };
   const fechadas = cidades.filter(c => c.estado === 'fechada').length;
   const votando = cidades.some(c => c.estado === 'votando');
   const fecha = Math.max(...cidades.map(c => c.fecha));
@@ -57,7 +70,8 @@ export function urnasCidades(cds, dataISO, agora = Date.now()) {
 }
 
 export function resumoUrnas(dataISO, agora = Date.now()) {
-  const cidades = Object.keys(CITIES).map(cd => ({ cd, pais: CITIES[cd][0], ...urnasCidade(cd, dataISO, agora) }));
+  const cidades = Object.keys(CITIES).map(cd => ({ cd, pais: CITIES[cd][0], ...urnasCidade(cd, dataISO, agora) }))
+    .filter(c => c.estado !== 'sem-votacao');
   const fechadas = cidades.filter(c => c.estado === 'fechada');
   const pendentes = new Set(cidades.filter(c => c.estado !== 'fechada').map(c => c.pais));
   const paisesFechados = new Set(fechadas.map(c => c.pais).filter(id => !pendentes.has(id)));
