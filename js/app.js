@@ -68,7 +68,7 @@ function lerHash() {
   else if (['mapa', 'estados', 'exterior'].includes(aba)) state.aba = 'mapa'; // estados e exterior: links antigos
   const sel = p.get('sel');
   state.sel = state.aba === 'mapa' ? de(UFS, sel) ?? de(COUNTRIES, sel)
-    : /^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null;
+    : de(UFS, sel) ?? (/^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null);
   state.cidade = de(CITIES, p.get('cidade'));
   const ufs = (p.get('ufs') || '').split(',').filter(uf => uf === 'zz' || Object.hasOwn(UFS, uf));
   state.multi = [...new Set(ufs)];
@@ -358,6 +358,9 @@ function resultadoBoletim(bu, modelo) {
   };
 }
 
+const presidiosDaUF = uf => listaPresidios?.filter(sec => sec.uf === uf) ?? [];
+const resultadoPresidiosUF = uf => somar(presidiosDaUF(uf).map(sec => dados.presidios[sec.id]).filter(Boolean));
+
 function montarResultadosPresidios() {
   if (!listaPresidios || !dados.br) return;
   const modelo = dados.br;
@@ -625,7 +628,7 @@ function itensDaFaixa() {
         lugar = nomeLocal(sec.nome);
         secao = sec.secao;
       }
-      return { id, quando: bu.recebidoEm, icone, lugar, secao, va: bu.votos[a.n] ?? 0, vb: bu.votos[b.n] ?? 0 };
+      return { id, cidade: ext?.[1] ?? null, quando: bu.recebidoEm, icone, lugar, secao, va: bu.votos[a.n] ?? 0, vb: bu.votos[b.n] ?? 0 };
     })
     .filter(Boolean)
     .sort((x, y) => y.quando - x.quando);
@@ -640,7 +643,7 @@ function renderTicker() {
   el.hidden = !itens.length;
   if (!itens.length) { el.querySelector('.faixa-trilho').innerHTML = ''; return; }
   const [a, b] = duelo();
-  const item = i => `<span class="faixa-item">
+  const item = i => `<span class="faixa-item" role="button" tabindex="-1" ${i.cidade ? `data-faixa-cidade="${esc(i.cidade)}"` : `data-faixa-presidio="${esc(i.id)}"`} title="Ver ${esc(i.lugar)}">
       <span class="faixa-ic">${esc(i.icone)}</span><b>${esc(i.lugar)}</b> · seção ${esc(i.secao)} · ${horaBrasilia(i.quando, dataEleicao())}
       <span class="faixa-voto" style="--cor:${corCand(a.n)}">${esc(a.nome)} ${fmt.format(i.va)}</span>
       <span class="faixa-voto" style="--cor:${corCand(b.n)}">${esc(b.nome)} ${fmt.format(i.vb)}</span>
@@ -650,6 +653,23 @@ function renderTicker() {
   el.querySelector('.faixa-trilho').innerHTML = `<div class="faixa-rolo" style="--duracao:${Math.max(25, itens.length * 7)}s">${lista}<span aria-hidden="true" class="faixa-copia">${lista}</span></div>`;
   el.querySelector('.faixa-qtd').textContent = `${itens.length} ${itens.length > 1 ? 'urnas' : 'urna'} nos últimos 10 min`;
 }
+
+// Clique numa urna da faixa: abre a cidade (aba Mapa) ou o presídio (aba Presídios).
+$('#ticker').addEventListener('click', ev => {
+  const it = ev.target.closest('.faixa-item');
+  if (!it) return;
+  const cd = it.dataset.faixaCidade;
+  const presidio = it.dataset.faixaPresidio;
+  if (cd && CITIES[cd]) {
+    trocarAba('mapa');
+    // A cidade abre assim que as cidades do exterior chegarem; até lá, o painel mostra o país dela.
+    irPara({ sel: CITIES[cd][0], cidade: cd, continente: null, multi: [] });
+  } else if (presidio) {
+    trocarAba('presidios');
+    selecionar(presidio);
+  }
+  window.scrollTo({ top: $('.painel').offsetTop - $('.fixo').offsetHeight - 8, behavior: 'smooth' });
+});
 
 /* ---------------- render: topo e placar ---------------- */
 
@@ -741,12 +761,27 @@ function fotoTag(ele, c, classe = '') {
 // a parcial deles, avisando que é só o exterior.
 const parcialExterior = () => !!dados.br && !dados.br.secoesTot && !!dados.zz?.boletins;
 
+// Barra mínima, sempre no topo: os dois do duelo e quanto já foi apurado.
+function renderMiniPlacar(r, a, b) {
+  const el = $('#mini-placar');
+  el.hidden = !r.secoesTot;
+  if (el.hidden) return;
+  const meio = `${r.boletins ? 'só exterior · ' : ''}${fmtPct(pctApurado(r), 1)} apurado`;
+  el.innerHTML = `<span class="mini-cand" style="--cor:${corCand(a.n)}"><b>${esc(a.nome)}</b> ${fmtPct(a.pct)} <small>${fmt.format(a.votos)}</small></span>
+    <span class="mini-meio">
+      <span class="mini-barra"><span style="width:${a.pct}%;background:${corCand(a.n)}"></span><span style="flex:1"></span><span style="width:${b.pct}%;background:${corCand(b.n)}"></span><i></i></span>
+      <small>${meio}</small>
+    </span>
+    <span class="mini-cand dir" style="--cor:${corCand(b.n)}"><small>${fmt.format(b.votos)}</small> ${fmtPct(b.pct)} <b>${esc(b.nome)}</b></span>`;
+}
+
 function renderPlacar() {
   const el = $('#placar');
-  if (!dados.br) { el.innerHTML = ''; return; }
+  if (!dados.br) { el.innerHTML = ''; $('#mini-placar').hidden = true; return; }
   const r = parcialExterior() ? dados.zz : dados.br;
   // Os dois do duelo, com os votos do recorte mostrado (o nacional ou a parcial do exterior).
   const [a, b] = duelo().map(d => r.cands.find(c => c.n === d.n) ?? d);
+  renderMiniPlacar(r, a, b);
   const bloco = (c, lado) => `
     <div class="duelo-cand ${lado}">
       ${fotoTag(state.ele, c)}
@@ -1018,8 +1053,25 @@ async function montarPresidios() {
   const svg = d3.select('#mapa-presidios').append('svg').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img');
   const fundo = svg.append('rect').attr('width', W).attr('height', H).style('fill', 'var(--ocean)');
   const g = svg.append('g');
-  g.append('g').selectAll('path').data(fc.features).join('path')
-    .attr('class', 'regiao').attr('d', path).style('fill', 'var(--land)');
+  // Estados pintados pela soma dos presídios de cada um, com a mesma escala do mapa principal; clicar
+  // num estado mostra a soma e a lista dele. Estado sem seção em presídio fica neutro e não é clicável.
+  const uf = f => f.properties.sigla.toLowerCase();
+  const temPresidio = new Set(listaPresidios.map(sec => sec.uf));
+  const estados = g.append('g').selectAll('path').data(fc.features).join('path')
+    .attr('class', f => `regiao${temPresidio.has(uf(f)) ? ' ativa' : ''}`)
+    .attr('d', path)
+    .attr('data-id', uf)
+    .on('mouseenter mousemove', (ev, f) => {
+      const qtd = presidiosDaUF(uf(f)).length;
+      mostrarTooltip(ev, {
+        titulo: UFS[uf(f)], icone: `<span class="linha-ic">${uf(f).toUpperCase()}</span>`,
+        r: qtd ? resultadoPresidiosUF(uf(f)) : null, urnas: urnasBrasil(dataEleicao()),
+        extra: `<div class="tt-sub" style="margin:6px 0 0">${qtd ? `${qtd} ${qtd > 1 ? 'seções' : 'seção'} em presídios` : 'Sem seção em presídio'}</div>`,
+      });
+    })
+    .on('mouseleave', esconderTooltip)
+    .on('click', (ev, f) => { if (temPresidio.has(uf(f))) selecionar(uf(f)); });
+  const caixaUF = new Map(fc.features.map(f => [uf(f), path.bounds(f)]));
   const comCoordenada = listaPresidios.filter(sec => sec.lat != null);
   const forma = sec => d3.symbol().type(sec.tipo === 'socioeducativo' ? d3.symbolSquare : d3.symbolCircle).size(sec.tipo === 'socioeducativo' ? 70 : 80)();
   const pontos = g.append('g').selectAll('path').data(comCoordenada, sec => sec.id).join('path')
@@ -1052,14 +1104,22 @@ async function montarPresidios() {
     svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
   }));
 
-  // Seleção pela lista: aproxima o ponto.
+  // Seleção pela lista: aproxima o ponto, ou o estado inteiro.
   const enquadrar = sec => {
     if (!sec || sec.lat == null) return;
     const [x, y] = proj([sec.lon, sec.lat]);
     const escala = Math.max(k, 6);
     svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-x, -y));
   };
-  mapaPresidios = { pontos, enquadrar, enquadrado: null };
+  const enquadrarUF = u => {
+    const caixa = caixaUF.get(u);
+    if (!caixa) return;
+    const [[x0, y0], [x1, y1]] = caixa;
+    const escala = Math.min(40, 0.85 / Math.max((x1 - x0) / W, (y1 - y0) / H));
+    svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2));
+  };
+  const resetar = () => svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity);
+  mapaPresidios = { pontos, estados, enquadrar, enquadrarUF, resetar, enquadrado: null };
   pintarPresidios();
 }
 
@@ -1069,14 +1129,24 @@ function pintarPresidios() {
   // Ponto pequeno não leva hachura: antes das 17h ele fica no cinza claro de "ainda votando".
   const urnas = u.estado === 'fechada' ? u : { estado: 'antes' };
   const sel = state.aba === 'presidios' ? state.sel : null;
+  const ufSel = UFS[sel] ? sel : null;
+  mapaPresidios.estados
+    .style('fill', f => {
+      const u = f.properties.sigla.toLowerCase();
+      return presidiosDaUF(u).length ? corRegiao(resultadoPresidiosUF(u), urnas) : css('--land');
+    })
+    .classed('sel', f => f.properties.sigla.toLowerCase() === ufSel);
   mapaPresidios.pontos
     .style('fill', sec => corRegiao(dados.presidios[sec.id], urnas))
     .classed('sel', sec => sec.id === sel);
   // O selecionado vai para cima dos vizinhos.
   mapaPresidios.pontos.filter(sec => sec.id === sel).raise();
   if (state.aba === 'presidios' && mapaPresidios.enquadrado !== sel) {
+    // Do estado para um presídio dele, aproxima o ponto; voltar do presídio para o estado reenquadra o estado.
     mapaPresidios.enquadrado = sel;
-    if (sel) mapaPresidios.enquadrar(listaPresidios.find(sec => sec.id === sel));
+    if (ufSel) mapaPresidios.enquadrarUF(ufSel);
+    else if (sel) mapaPresidios.enquadrar(listaPresidios.find(sec => sec.id === sel));
+    else mapaPresidios.resetar();
   }
 }
 
@@ -1461,6 +1531,27 @@ function lateralExterior() {
   return painelGeral();
 }
 
+// Lista "por tipo de unidade" e a lista de seções (com busca) de um grupo de presídios.
+function listasPresidios(secoes) {
+  const porTipo = Object.keys(TIPO_PRESIDIO).map(tipo => {
+    const doTipo = secoes.filter(x => x.tipo === tipo);
+    return { tipo, qtd: doTipo.length, r: somar(doTipo.map(x => dados.presidios[x.id])) };
+  }).filter(t => t.qtd);
+  const termo = normalizar(state.busca);
+  const linhas = secoes
+    .filter(x => !termo || normalizar(`${x.nome} ${x.municipio} ${x.uf}`).includes(termo))
+    .map(x => ({ id: x.id, tipo: 'presidio', icone: x.uf.toUpperCase(), nome: nomeLocal(x.nome), nota: x.municipio, r: dados.presidios[x.id] }));
+  return `<div class="lista-cab"><h3>Por tipo de unidade</h3></div>
+      <ul class="linhas">${porTipo.map(t => `
+        <li><div class="linha estatica">
+          <span class="linha-ic">${t.tipo === 'socioeducativo' ? '■' : '●'}</span>
+          <span class="linha-nome">${TIPO_PRESIDIO[t.tipo]}<small>${t.qtd} ${t.qtd > 1 ? 'seções' : 'seção'}</small></span>
+          ${miniBarra(t.r)}<span class="linha-pct">${liderPct(t.r)}</span>
+        </div></li>`).join('')}</ul>`
+    + `<input id="busca" class="busca" type="search" placeholder="Buscar presídio ou cidade…" value="${esc(state.busca)}" autocomplete="off">`
+    + listaHtml(`Seções (${secoes.length})`, linhas);
+}
+
 function lateralPresidios() {
   if (!listaPresidios || !dados.presidiosTotal) return '<p class="vazio">Carregando a lista de seções…</p>';
   const u = urnasBrasil(dataEleicao());
@@ -1468,36 +1559,28 @@ function lateralPresidios() {
   if (sec) {
     const agregadas = sec.agregadas?.length ? ` (inclui a seção ${sec.agregadas.join(', ')}, agregada)` : '';
     const sub = `${TIPO_PRESIDIO[sec.tipo]} · ${esc(sec.municipio)}/${sec.uf.toUpperCase()} · zona ${sec.zona}, seção ${sec.secao}${agregadas}`;
-    return detalheHtml({ voltar: 'Todos os presídios', icone: `<span class="lat-uf">${sec.uf.toUpperCase()}</span>`, titulo: nomeLocal(sec.nome), sub, r: dados.presidios[sec.id], urnas: u })
+    return detalheHtml({ voltar: UFS[sec.uf], icone: `<span class="lat-uf">${sec.uf.toUpperCase()}</span>`, titulo: nomeLocal(sec.nome), sub, r: dados.presidios[sec.id], urnas: u })
       + (sec.aprox ? '<p class="urnas-resumo">Localização aproximada: o cadastro do TSE não traz as coordenadas deste local, então o ponto fica no centro do município.</p>' : '');
   }
-  const total = dados.presidiosTotal;
-  const ufs = new Set(listaPresidios.map(x => x.uf)).size;
-  const porTipo = Object.keys(TIPO_PRESIDIO).map(tipo => {
-    const doTipo = listaPresidios.filter(x => x.tipo === tipo);
-    return { tipo, qtd: doTipo.length, r: somar(doTipo.map(x => dados.presidios[x.id])) };
-  });
-  const termo = normalizar(state.busca);
-  const linhas = listaPresidios
-    .filter(x => !termo || normalizar(`${x.nome} ${x.municipio} ${x.uf}`).includes(termo))
-    .map(x => ({ id: x.id, tipo: 'presidio', icone: x.uf.toUpperCase(), nome: nomeLocal(x.nome), nota: x.municipio, r: dados.presidios[x.id] }));
   const antes = u.estado !== 'fechada'
     ? `<p class="urnas-resumo">Os boletins dessas seções só saem depois que as urnas do Brasil fecham, às <b>17h de Brasília</b>. Até lá a página não consulta nada delas; depois, confere cada seção ainda sem boletim a cada 5 minutos.</p>`
     : '';
+  if (UFS[state.sel]) {
+    const uf = state.sel;
+    const doEstado = presidiosDaUF(uf);
+    return detalheHtml({
+      voltar: 'Todos os presídios', icone: `<span class="lat-uf">${uf.toUpperCase()}</span>`, titulo: UFS[uf],
+      sub: `Presídios do estado · ${doEstado.length} ${doEstado.length > 1 ? 'seções' : 'seção'}. Resultado somado dos boletins de urna já publicados.`,
+      r: resultadoPresidiosUF(uf), urnas: u,
+    }) + antes + listasPresidios(doEstado);
+  }
+  const ufs = [...new Set(listaPresidios.map(x => x.uf))];
+  const porEstado = ufs.map(uf => ({ id: uf, tipo: 'uf', icone: uf.toUpperCase(), nome: UFS[uf], nota: `${presidiosDaUF(uf).length} seções`, r: resultadoPresidiosUF(uf) }));
   return detalheHtml({
     titulo: 'Presídios',
-    sub: `Seções para presos provisórios e adolescentes internados · ${listaPresidios.length} seções em ${ufs} estados. Resultado somado dos boletins de urna já publicados.`,
-    r: total,
-  }) + antes
-    + `<div class="lista-cab"><h3>Por tipo de unidade</h3></div>
-      <ul class="linhas">${porTipo.map(t => `
-        <li><div class="linha estatica">
-          <span class="linha-ic">${t.tipo === 'socioeducativo' ? '■' : '●'}</span>
-          <span class="linha-nome">${TIPO_PRESIDIO[t.tipo]}<small>${t.qtd} seções</small></span>
-          ${miniBarra(t.r)}<span class="linha-pct">${liderPct(t.r)}</span>
-        </div></li>`).join('')}</ul>`
-    + `<input id="busca" class="busca" type="search" placeholder="Buscar presídio ou cidade…" value="${esc(state.busca)}" autocomplete="off">`
-    + listaHtml(`Seções (${listaPresidios.length})`, linhas);
+    sub: `Seções para presos provisórios e adolescentes internados · ${listaPresidios.length} seções em ${ufs.length} estados. Resultado somado dos boletins de urna já publicados. Clique num estado para ver a soma dele.`,
+    r: dados.presidiosTotal,
+  }) + antes + listaHtml(`Por estado (${ufs.length})`, porEstado) + listasPresidios(listaPresidios);
 }
 
 const normalizar = s => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
@@ -1615,9 +1698,11 @@ function irPara(mudancas) {
   render();
 }
 
-// Volta um nível: cidade → país → continente → visão geral; estado, soma e presídio → visão geral.
+// Volta um nível: cidade → país → continente → visão geral; presídio → estado; estado e soma → visão geral.
 function voltar() {
-  if (state.cidade) irPara({ cidade: null });
+  const presidio = state.aba === 'presidios' ? listaPresidios?.find(x => x.id === state.sel) : null;
+  if (presidio) selecionar(presidio.uf);
+  else if (state.cidade) irPara({ cidade: null });
   else if (state.sel && COUNTRIES[state.sel] && state.continente) irPara({ sel: null });
   else if (state.sel || state.continente || state.multi.length) selecionar(null);
 }

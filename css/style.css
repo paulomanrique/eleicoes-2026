@@ -395,8 +395,8 @@ h1 {
 .urnas-resumo { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 13px; color: var(--ink-2); }
 .urnas-resumo b { color: var(--ink); }
 
-.presidio { stroke: var(--surface); stroke-width: 1.2; cursor: pointer; transition: fill .4s ease; }
-.presidio:hover, .presidio.sel { stroke: var(--sel); stroke-width: 2; }
+.presidio { stroke: var(--ink); stroke-width: .9; cursor: pointer; transition: fill .4s ease; }
+.presidio:hover, .presidio.sel { stroke: var(--sel); stroke-width: 2.4; }
 #mapa-presidios svg { max-height: min(72vh, 640px); margin: 0 auto; }
 .forma { display: inline-block; width: 9px; height: 9px; margin-right: 6px; background: var(--ink-2); vertical-align: -1px; }
 .forma.circulo { border-radius: 50%; }
@@ -461,4 +461,31 @@ h1 {
   .faixa-rolo { animation: none; }
   .faixa-copia { display: none; }
   .faixa-trilho { overflow-x: auto; }
+}
+
+/* ---------- topo fixo: faixa das urnas e placar mínimo ---------- */
+.fixo { position: sticky; top: 0; z-index: 20; }
+.faixa-item { cursor: pointer; border-radius: 4px; }
+.faixa-item:hover b { text-decoration: underline; }
+.mini-placar {
+  display: grid; grid-template-columns: 1fr minmax(160px, 420px) 1fr; align-items: center; gap: 14px;
+  padding: 6px clamp(16px, 4vw, 48px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.mini-cand { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; }
+.mini-cand.dir { justify-content: flex-end; }
+.mini-cand b { font-weight: 600; }
+.mini-cand::before { content: ''; flex: none; align-self: center; width: 9px; height: 9px; border-radius: 50%; background: var(--cor); }
+.mini-cand.dir::before { order: 9; }
+.mini-cand small, .mini-meio small { color: var(--ink-2); font-size: 11.5px; }
+.mini-meio { display: grid; justify-items: center; gap: 2px; }
+.mini-barra { position: relative; display: flex; width: 100%; height: 6px; border-radius: 3px; overflow: hidden; background: var(--surface-2); }
+.mini-barra i { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+@media (max-width: 640px) {
+  .mini-placar { grid-template-columns: 1fr 1fr; }
+  .mini-meio { grid-column: 1 / -1; grid-row: 2; }
+  .mini-cand small { display: none; }
 }
