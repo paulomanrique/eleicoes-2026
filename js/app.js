@@ -1073,9 +1073,8 @@ async function montarBrasil() {
     .attr('class', 'rotulo-uf')
     .attr('transform', f => `translate(${path.centroid(f)})`)
     .text(f => f.properties.sigla);
-  const caixaUF = new Map(fc.features.map(f => [uf(f), path.bounds(f)]));
 
-  // As siglas ficam do mesmo tamanho na tela em qualquer zoom.
+  // Clicar num estado não mexe no zoom: o Brasil inteiro fica na tela. As siglas ficam do mesmo tamanho na tela em qualquer zoom.
   const zoom = d3.zoom().scaleExtent([1, 40]).translateExtent([[0, 0], [W, H]])
     .on('zoom', ev => {
       const k = ev.transform.k;
@@ -1088,20 +1087,11 @@ async function montarBrasil() {
   document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => {
     if (state.aba !== 'brasil') return;
     const acao = btn.dataset.zoom;
-    if (acao === 'reset') { selecionar(null); return; }
+    if (acao === 'reset') { selecionar(null); svg.transition().duration(600).call(zoom.transform, d3.zoomIdentity); return; }
     svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
   }));
 
-  // Um ou mais estados (soma), com folga em volta.
-  const enquadrarEstados = ufs => {
-    const cs = ufs.map(u => caixaUF.get(u)).filter(Boolean);
-    if (!cs.length) { resetar(); return; }
-    const [x0, y0, x1, y1] = [d3.min(cs, c => c[0][0]), d3.min(cs, c => c[0][1]), d3.max(cs, c => c[1][0]), d3.max(cs, c => c[1][1])];
-    const escala = Math.min(8, 0.7 / Math.max((x1 - x0) / W, (y1 - y0) / H));
-    svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2).scale(escala).translate(-(x0 + x1) / 2, -(y0 + y1) / 2));
-  };
-  const resetar = () => svg.transition().duration(700).call(zoom.transform, d3.zoomIdentity);
-  mapaBrasil = { paths, enquadrarEstados, resetar, enquadrado: null };
+  mapaBrasil = { paths };
   pintarBrasil();
 }
 
@@ -1114,13 +1104,6 @@ function pintarBrasil() {
   mapaBrasil.paths
     .style('fill', f => corRegiao(dados.ufs[f.properties.sigla.toLowerCase()], urnas))
     .classed('sel', f => { const u = f.properties.sigla.toLowerCase(); return u === ufSel || multi.includes(u); });
-  const alvo = multi.length ? `soma:${multi.join(',')}` : ufSel ? `uf:${ufSel}` : null;
-  if (naAba && mapaBrasil.enquadrado !== alvo) {
-    mapaBrasil.enquadrado = alvo;
-    if (multi.length) mapaBrasil.enquadrarEstados(multi);
-    else if (ufSel) mapaBrasil.enquadrarEstados([ufSel]);
-    else mapaBrasil.resetar();
-  }
 }
 
 /* ---------------- mapa dos presídios ---------------- */
@@ -1845,7 +1828,6 @@ function trocarEleicao(ele) {
   dados.querCidades = state.aba === 'mapa';
   dados.querPresidios = state.aba === 'presidios';
   if (mundo) mundo.enquadrado = undefined;
-  if (mapaBrasil) mapaBrasil.enquadrado = undefined;
   gravarHash();
   render();
   ciclo();
@@ -1956,7 +1938,6 @@ window.addEventListener('hashchange', () => {
     return;
   }
   if (mundo) mundo.enquadrado = undefined;
-  if (mapaBrasil) mapaBrasil.enquadrado = undefined;
   render();
   ativarAba(state.aba);
 });
