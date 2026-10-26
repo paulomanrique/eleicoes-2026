@@ -13,6 +13,7 @@ python3 -m http.server 8765   # depois abra http://localhost:8765
 - **Brasil**: só o mapa do Brasil por estado, com as siglas, soma de estados (Ctrl/⌘ + clique) e o painel
   só com regiões e estados.
 - **Presídios**: as seções especiais, num mapa à parte.
+- **Zonas**: Lula e Flávio Bolsonaro do 1º para o 2º turno, por zona eleitoral (abaixo).
 - Turno na URL: `#e=6258` (2º turno) ou `#e=6257` (1º turno). Seleção também vai na URL.
 ## Consultas ao TSE (para não tomar 429)
 
@@ -73,3 +74,18 @@ No exterior, a seção só é instalada onde há pelo menos 30 eleitores (Códig
 as 40 cidades abaixo disso saíram como "seção não instalada". A página lê o eleitorado de cada cidade no índice
 do TSE e trata essas cidades como "sem votação": não entram nos horários de fechamento, não seguram a espera
 por resultado e não têm boletim consultado.
+
+## Zonas: 1º → 2º turno
+
+Lula (13) e Flávio Bolsonaro (22) em cada zona eleitoral, nos dois turnos: percentual dos válidos, votos, variação em
+pontos percentuais e quanto a vantagem andou (o "movimento"). No Brasil, uma linha por estado; num estado, uma por zona.
+O agregado soma as zonas marcadas (clique na linha) ou, sem marca, tudo o que a tabela mostra (a busca filtra por zona
+ou município).
+
+- A API não tem total por zona: o TSE publica um arquivo por município e, nos municípios com mais de uma zona, um por
+  município × zona. A zona é a soma desses pedaços (uma zona pode cobrir vários municípios).
+- **1º turno**, encerrado: `data/zonas.json`, gerado por `scripts/gera_zonas.py` (a lista de pedaços vem da
+  configuração de seções do 2º turno).
+- **2º turno**, ao vivo, só do estado aberto: o índice do estado (`<uf>-e006258-ab.json`) diz quais municípios
+  mudaram, e só eles são baixados, a cada 3 minutos enquanto o estado não estiver todo apurado. Os pedaços ficam no
+  `localStorage` (`tse-zonas-v1:<uf>`) só com os números que a aba usa.

@@ -4,6 +4,9 @@ import {
   somar, pctApurado, pronto, resultadoVazio, fetchBoletimSecao, fetchSecoesExterior, pausadoAte,
 } from './tse.js';
 import { Cache } from './cache.js';
+import {
+  ELE_2T, LULA, FLAVIO, carregarZonas, zonasCarregadas, temZonas, sincronizarUF, ufPronta, segundoTurnoComVotos, zonasDaUF, nomeMun, total1UF, somarZonas, compactar,
+} from './zonas.js';
 import { COUNTRIES, CITIES, CONTINENTES, flagEmoji, continenteDaCidade, continenteDoPais, nomePaisNoContinente } from './exterior.js';
 import {
   urnasCidade, urnasCidades, urnasPais, urnasBrasil, resumoUrnas, horaBrasilia, faltam, fechamentoBrasil, definirSemVotacao, MINIMO_ELEITORES,
@@ -29,9 +32,12 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 const dataEleicao = () => ELEICOES[state.ele].data;
 
 // Na aba Mapa, sel = UF (estado) ou código do país; cidade = cidade do exterior; continente = recorte do exterior.
-// Na aba Brasil, sel = UF; na aba Presídios, sel = UF ou presídio.
+// Na aba Brasil, sel = UF; na aba Presídios, sel = UF ou presídio; na aba Zonas, sel = UF e zonas = as zonas marcadas.
 // multi: estados (e "zz", o exterior) somados com Ctrl/⌘ + clique; somando: o mesmo pelo clique simples (toque).
-const state = { ele: '6258', aba: 'mapa', sel: null, cidade: null, multi: [], somando: false, continente: null, ordem: null, busca: '' };
+const state = {
+  ele: '6258', aba: 'mapa', sel: null, cidade: null, multi: [], somando: false, continente: null, ordem: null, busca: '',
+  zonas: [], ordemZonas: { col: 'zona', desc: false },
+};
 
 const REGIOES = {
   norte: { sigla: 'N', nome: 'Norte', ufs: ['ac', 'ap', 'am', 'pa', 'ro', 'rr', 'to'] },
@@ -67,15 +73,17 @@ function lerHash() {
   const aba = p.get('aba');
   if (aba === 'presidios') state.aba = 'presidios';
   else if (aba === 'brasil' || aba === 'estados') state.aba = 'brasil'; // estados: links antigos
+  else if (aba === 'zonas') state.aba = 'zonas';
   else if (aba === 'mapa' || aba === 'exterior') state.aba = 'mapa'; // exterior: links antigos
   const sel = p.get('sel');
   state.sel = state.aba === 'mapa' ? de(UFS, sel) ?? de(COUNTRIES, sel)
-    : state.aba === 'brasil' ? de(UFS, sel)
+    : state.aba === 'brasil' || state.aba === 'zonas' ? de(UFS, sel)
     : de(UFS, sel) ?? (/^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null);
   state.cidade = state.aba === 'mapa' ? de(CITIES, p.get('cidade')) : null;
   const ufs = (p.get('ufs') || '').split(',').filter(uf => (uf === 'zz' && state.aba === 'mapa') || Object.hasOwn(UFS, uf));
   state.multi = [...new Set(ufs)];
   state.continente = state.aba === 'mapa' ? de(CONTINENTES, p.get('cont')) : null;
+  state.zonas = state.aba === 'zonas' && state.sel ? [...new Set((p.get('zn') || '').split(',').filter(z => /^\d{4}$/.test(z)))] : [];
 }
 
 function gravarHash() {
@@ -84,6 +92,7 @@ function gravarHash() {
   if (state.cidade) p.set('cidade', state.cidade);
   if (state.multi.length) p.set('ufs', state.multi.join(','));
   if (state.continente) p.set('cont', state.continente);
+  if (state.zonas.length) p.set('zn', state.zonas.join(','));
   history.replaceState(null, '', `#${p}`);
 }
 
@@ -686,6 +695,7 @@ function render() {
   pintarBrasil();
   pintarPresidios();
   renderLateral();
+  renderZonas();
 }
 
 function renderTopo() {
@@ -695,6 +705,8 @@ function renderTopo() {
   $('#mapa-mundo').hidden = state.aba !== 'mapa';
   $('#mapa-brasil').hidden = state.aba !== 'brasil';
   $('#mapa-presidios').hidden = state.aba !== 'presidios';
+  $('.corpo').hidden = state.aba === 'zonas';
+  $('#zonas').hidden = state.aba !== 'zonas';
   $('#zoom-ctrl').hidden = false;
 }
 
@@ -1663,6 +1675,295 @@ function lateralPresidios() {
 
 const normalizar = s => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 
+/* ---------------- aba Zonas: Lula e Flávio do 1º para o 2º turno ---------------- */
+
+// Brasil: um estado por linha (clique abre o estado). Estado: uma zona eleitoral por linha (clique marca a
+// zona). O agregado soma as zonas marcadas ou, sem marca, tudo o que a tabela mostra (a busca filtra).
+// O 1º turno vem pronto de data/zonas.json; o 2º, ao vivo (zonas.js), a cada 3 minutos enquanto mudar.
+const INTERVALO_ZONAS = 3 * 60_000;
+let zonasProgresso = null; // { uf, feitos, total } enquanto baixa o 2º turno de um estado
+let zonasErro = null;
+let timerZonas = null;
+let pedidoZonas = 0;
+
+const pctDe = (t, i) => (t?.[2] ? t[i] / t[2] * 100 : null);
+const margemDe = t => (t?.[2] ? (t[0] - t[1]) / t[2] * 100 : null);
+const dif = (x, y) => (x == null || y == null ? null : x - y);
+const fmtNum1 = v => Math.abs(v).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const apuradoDe = t => (t?.[5] ? t[6] / t[5] * 100 : 0);
+
+// Os dois do 2º turno, com nome, partido e foto do arquivo nacional do 2º turno (Lula à esquerda).
+function candidatosZonas() {
+  const br = Cache.da(ELE_2T).get('br');
+  const um = (n, nome) => br?.cands.find(c => c.n === n) ?? { n, nome, partido: '', sq: '' };
+  return [um(LULA, 'Lula'), um(FLAVIO, 'Flávio Bolsonaro')];
+}
+const curto = c => c.nome.split(' ')[0];
+
+function irZonas(mudancas) {
+  const trocouUF = 'sel' in mudancas && mudancas.sel !== state.sel;
+  Object.assign(state, mudancas);
+  if (trocouUF) { state.zonas = []; state.busca = ''; }
+  gravarHash();
+  renderZonas();
+  if (trocouUF) { window.scrollTo({ top: $('.painel').offsetTop - $('.fixo').offsetHeight - 8 }); sincronizarZonas(); }
+}
+
+async function sincronizarZonas() {
+  clearTimeout(timerZonas);
+  if (state.aba !== 'zonas') return;
+  const pedido = ++pedidoZonas;
+  const vale = () => pedido === pedidoZonas && state.aba === 'zonas';
+  let uf = null;
+  const c2 = Cache.da(ELE_2T);
+  zonasErro = null;
+  try {
+    await carregarZonas();
+    uf = UFS[state.sel] && temZonas(state.sel) ? state.sel : null;
+    if (!c2.get('br')) await baixarParaComparar(ELE_2T, c2, 'br', () => fetchResultado(ELE_2T, 'br'));
+    if (vale()) renderZonas();
+    if (uf) {
+      await sincronizarUF(uf, (feitos, total) => {
+        if (!vale()) return;
+        zonasProgresso = total ? { uf, feitos, total } : null;
+        if (feitos % 10 === 0 || feitos === total) renderZonas();
+      }, vale);
+    } else if (segundoTurnoComVotos()) {
+      await Promise.all(Object.keys(UFS).map(u => baixarParaComparar(ELE_2T, c2, u, () => fetchResultado(ELE_2T, u))));
+    }
+  } catch (err) {
+    console.warn(err);
+    if (vale()) zonasErro = err;
+  }
+  c2.salvar();
+  if (!vale()) return;
+  zonasProgresso = null;
+  renderZonas();
+  // Antes das 17h de Brasília do 2º turno: acorda quando as urnas fecham.
+  if (!segundoTurnoComVotos()) {
+    timerZonas = setTimeout(sincronizarZonas, Math.max(INTERVALO, fechamentoBrasil(ELEICOES[ELE_2T].data) - Date.now() + FOLGA_APOS_FECHAR));
+    return;
+  }
+  const pendente = uf ? !ufPronta(uf) : !Object.keys(UFS).every(u => pronto(c2.get(u)));
+  if (!pendente) return;
+  const espera = zonasErro instanceof LimiteTSE ? Math.max(INTERVALO, zonasErro.ate - Date.now()) : INTERVALO_ZONAS;
+  timerZonas = setTimeout(sincronizarZonas, espera);
+}
+
+function linhasZonas(uf) {
+  if (!uf) {
+    const c2 = Cache.da(ELE_2T);
+    return Object.keys(UFS).filter(temZonas).map(u => {
+      const r2 = c2.get(u);
+      return { id: u, nome: UFS[u], sigla: u.toUpperCase(), nota: '', t1: total1UF(u), t2: r2 ? compactar(r2) : null, falta2: r2 ? 0 : 1 };
+    });
+  }
+  return zonasDaUF(uf).map(z => {
+    const nomes = z.muns.map(m => nomeMun(uf, m));
+    return {
+      ...z, nome: `Zona ${Number(z.id)}`, sigla: String(Number(z.id)), nomes,
+      nota: nomes.length > 3 ? `${nomes.slice(0, 3).join(', ')} e mais ${nomes.length - 3}` : nomes.join(', '),
+    };
+  });
+}
+
+const ORDENS_ZONAS = {
+  zona: l => (l.nomes ? Number(l.id) : l.nome),
+  eleitorado: l => l.t1[4],
+  lula: l => dif(pctDe(l.t2, 0), pctDe(l.t1, 0)),
+  flavio: l => dif(pctDe(l.t2, 1), pctDe(l.t1, 1)),
+  movimento: l => dif(margemDe(l.t2), margemDe(l.t1)),
+  apurado: l => apuradoDe(l.t2),
+};
+const DESC_PADRAO = { zona: false, eleitorado: true, lula: true, flavio: true, movimento: true, apurado: true };
+
+function ordenarZonas(linhas) {
+  const { col, desc } = state.ordemZonas;
+  const chave = ORDENS_ZONAS[col];
+  // Sem 2º turno ainda (valor nulo) vai para o fim, nos dois sentidos.
+  return linhas.sort((x, y) => {
+    const a = chave(x), b = chave(y);
+    if (a == null || b == null) return (a == null) - (b == null);
+    const c = typeof a === 'string' ? a.localeCompare(b, 'pt-BR') : a - b;
+    return desc ? -c : c;
+  });
+}
+
+// Pontos percentuais: verde quando subiu, laranja quando caiu (como na comparação entre turnos).
+function ppHtml(d) {
+  if (d == null) return '';
+  return `<small class="delta${d > 0.005 ? ' mais' : d < -0.005 ? ' menos' : ''}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${fmtNum1(d)} pp</small>`;
+}
+
+// Vantagem de Lula sobre Flávio (pp dos válidos), com o nome de quem lidera.
+function liderHtml(m, cands) {
+  if (m == null) return '<span class="zn-nada">—</span>';
+  if (Math.abs(m) < 0.05) return '<span class="zn-lider">empate</span>';
+  const c = m > 0 ? cands[0] : cands[1];
+  return `<span class="zn-lider" style="--cor:${corCand(c.n)}">${esc(curto(c))} +${fmtNum1(m)}</span>`;
+}
+
+// Quanto a vantagem andou do 1º para o 2º turno: barra para o lado de quem ganhou terreno (Lula à esquerda).
+function movimentoHtml(d, cands) {
+  if (d == null) return '<span class="zn-nada">—</span>';
+  const c = d > 0 ? cands[0] : cands[1];
+  const w = Math.min(50, Math.abs(d) / 10 * 50); // 10 pontos ou mais: meia barra
+  return `<span class="zn-mov" title="${esc(curto(c))} ganhou ${fmtNum1(d)} pontos de vantagem"><span class="zn-mov-trilho"><i style="${d > 0 ? 'right' : 'left'}:50%;width:${w}%;background:${corCand(c.n)}"></i><b></b></span>
+    <small style="color:${corCand(c.n)}">${Math.abs(d) < 0.05 ? '±0,0' : `${esc(curto(c))} +${fmtNum1(d)}`}</small></span>`;
+}
+
+function celulaCand(l, i) {
+  const p1 = pctDe(l.t1, i);
+  const p2 = pctDe(l.t2, i);
+  return `<td class="zn-c"><span class="zn-p1">${p1 == null ? '—' : fmtPct(p1, 1)}</span> → <b>${p2 == null ? '—' : fmtPct(p2, 1)}</b> ${ppHtml(dif(p2, p1))}
+    <div class="zn-votos">${fmt.format(l.t1[i])} → ${l.t2 ? fmt.format(l.t2[i]) : '—'}</div></td>`;
+}
+
+function agregadoZonasHtml(titulo, sub, s, cands) {
+  const parcial = !s.t2 || s.falta2 || s.t2[6] < s.t2[5];
+  const bloco = (c, i) => {
+    const p1 = pctDe(s.t1, i);
+    const p2 = pctDe(s.t2, i);
+    return `<div class="zn-ag-cand" style="--cor:${corCand(c.n)}">
+      <div class="zn-ag-quem">${fotoTag(ELE_2T, c, 'p')}<div><div class="cand-nome">${esc(c.nome)}</div><div class="cand-partido">${esc(c.partido)}${c.partido ? ' · ' : ''}${esc(c.n)}</div></div></div>
+      <dl class="zn-ag-nums">
+        <div><dt>1º turno</dt><dd>${p1 == null ? '—' : fmtPct(p1)}<small>${fmt.format(s.t1[i])}</small></dd></div>
+        <div><dt>2º turno</dt><dd>${p2 == null ? '—' : fmtPct(p2)}<small>${s.t2 ? fmt.format(s.t2[i]) : '—'}</small></dd></div>
+        <div><dt>Variação</dt><dd>${ppHtml(dif(p2, p1)) || '—'}<small>${s.t2?.[2] ? deltaHtml(s.t2[i], s.t1[i]) : ''}</small></dd></div>
+      </dl></div>`;
+  };
+  const m1 = margemDe(s.t1);
+  const m2 = margemDe(s.t2);
+  const apurado = s.t2 ? apuradoDe(s.t2) : 0;
+  const aviso = !s.t2?.[2] ? '<p class="zn-aviso">O 2º turno ainda não tem votos apurados aqui.</p>'
+    : parcial ? `<p class="zn-aviso">2º turno com ${fmtPct(apurado, 1)} das seções apuradas${s.falta2 ? ' (parte ainda carregando)' : ''}: compare os percentuais, os votos ainda vão subir.</p>` : '';
+  return `<section class="zn-agregado">
+    <div class="zn-ag-cab"><div><h2 class="lat-titulo">${esc(titulo)}</h2><p class="lat-sub">${sub}</p></div></div>
+    <div class="zn-ag-grade">
+      ${bloco(cands[0], 0)}
+      <div class="zn-ag-meio">
+        <dl class="zn-ag-nums">
+          <div><dt>Vantagem no 1º</dt><dd>${liderHtml(m1, cands)}</dd></div>
+          <div><dt>Vantagem no 2º</dt><dd>${liderHtml(m2, cands)}</dd></div>
+        </dl>
+        <div class="zn-ag-mov"><span>Movimento</span>${movimentoHtml(dif(m2, m1), cands)}</div>
+        <p class="zn-ag-extra">Válidos ${fmt.format(s.t1[2])} → ${s.t2 ? fmt.format(s.t2[2]) : '—'}<br>Comparecimento ${fmt.format(s.t1[3])} → ${s.t2 ? fmt.format(s.t2[3]) : '—'}</p>
+      </div>
+      ${bloco(cands[1], 1)}
+    </div>
+    ${s.t2 ? progressoHtml({ secoes: s.t2[5], secoesTot: s.t2[6] }).replace('das seções apuradas', 'das seções apuradas no 2º turno') : ''}
+    ${aviso}
+  </section>`;
+}
+
+function renderZonas() {
+  const el = $('#zonas');
+  if (state.aba !== 'zonas') return;
+  if (!zonasCarregadas()) {
+    carregarZonas().then(() => renderZonas(), err => { console.warn(err); el.innerHTML = '<p class="vazio">Não foi possível carregar as zonas eleitorais.</p>'; });
+    el.innerHTML = '<p class="vazio">Carregando as zonas eleitorais…</p>';
+    return;
+  }
+  const uf = UFS[state.sel] && temZonas(state.sel) ? state.sel : null;
+  const cands = candidatosZonas();
+  const termo = normalizar(state.busca.trim());
+  const todas = linhasZonas(uf);
+  const acha = l => !termo || normalizar(`${l.nome} ${l.sigla} ${(l.nomes ?? []).join(' ')}`).includes(termo)
+    || (uf && /^\d+$/.test(termo) && Number(l.id) === Number(termo));
+  const linhas = ordenarZonas(todas.filter(acha));
+  const marcadas = uf ? todas.filter(l => state.zonas.includes(l.id)) : [];
+  const soma = somarZonas(marcadas.length ? marcadas : linhas);
+  const muns = uf ? new Set(todas.flatMap(l => l.muns)).size : 0;
+
+  const titulo = !uf ? (termo ? `${linhas.length} estados` : 'Brasil')
+    : marcadas.length ? `${UFS[uf]} · ${marcadas.length} ${marcadas.length > 1 ? 'zonas marcadas' : 'zona marcada'}`
+    : termo ? `${UFS[uf]} · ${linhas.length} ${linhas.length === 1 ? 'zona' : 'zonas'} na busca` : UFS[uf];
+  const sub = !uf ? `Soma dos ${todas.length} estados (sem o exterior). Clique num estado para ver as zonas eleitorais dele.`
+    : marcadas.length ? esc(marcadas.map(l => l.nome).join(', '))
+    : `${todas.length} zonas eleitorais, ${muns} ${muns > 1 ? 'municípios' : 'município'}. Clique nas zonas para somar só as escolhidas.`;
+
+  const progresso = zonasProgresso?.uf === uf && zonasProgresso.total
+    ? `<span class="zn-baixando">Baixando o 2º turno do TSE… ${zonasProgresso.feitos}/${zonasProgresso.total} municípios</span>` : '';
+  const erro = zonasErro instanceof LimiteTSE ? '<span class="zn-baixando">O TSE limitou as consultas; tentando de novo em alguns minutos.</span>'
+    : zonasErro ? '<span class="zn-baixando">A última consulta ao TSE falhou; tentando de novo.</span>' : '';
+  const opcoes = Object.entries(UFS).sort((a, b) => a[1].localeCompare(b[1], 'pt-BR'))
+    .map(([u, nome]) => `<option value="${u}"${u === uf ? ' selected' : ''}>${esc(nome)}</option>`).join('');
+  const { col, desc } = state.ordemZonas;
+  const th = (id, rotulo, classe = '') => `<th class="${classe}" aria-sort="${col === id ? (desc ? 'descending' : 'ascending') : 'none'}"><button type="button" data-zn-ordem="${id}">${rotulo}${col === id ? (desc ? ' ↓' : ' ↑') : ''}</button></th>`;
+
+  const linhaHtml = l => {
+    const marcada = uf && state.zonas.includes(l.id);
+    return `<tr class="${marcada ? 'marcada' : ''}" data-zn-linha="${esc(l.id)}" tabindex="0"${uf ? ` aria-selected="${!!marcada}"` : ''}>
+      <td class="zn-nome">${uf ? `<span class="zn-check" aria-hidden="true">${marcada ? '✓' : ''}</span>` : `<span class="linha-ic">${l.sigla}</span>`}<span><b>${esc(l.nome)}</b>${l.nota ? `<small>${esc(l.nota)}</small>` : ''}</span></td>
+      <td class="zn-n">${fmt.format(l.t1[4])}</td>
+      ${celulaCand(l, 0)}
+      ${celulaCand(l, 1)}
+      <td>${liderHtml(margemDe(l.t1), cands)}<span class="zn-seta">→</span>${liderHtml(margemDe(l.t2), cands)}</td>
+      <td>${movimentoHtml(dif(margemDe(l.t2), margemDe(l.t1)), cands)}</td>
+      <td class="zn-n">${l.t2 ? fmtPct(apuradoDe(l.t2), 0) : l.falta2 ? '…' : '—'}</td>
+    </tr>`;
+  };
+
+  const focoBusca = document.activeElement?.id === 'zn-busca';
+  el.innerHTML = `
+    <div class="zn-barra">
+      ${uf ? '<button type="button" class="lat-voltar" data-zn-voltar>← Brasil</button>' : ''}
+      <label class="zn-uf">Estado <select id="zn-uf"><option value="">Brasil (todos os estados)</option>${opcoes}</select></label>
+      ${progresso}${erro}
+    </div>
+    ${agregadoZonasHtml(titulo, sub, soma, cands)}
+    <div class="zn-ferramentas">
+      <input id="zn-busca" class="busca" type="search" placeholder="${uf ? 'Buscar zona ou município…' : 'Buscar estado…'}" value="${esc(state.busca)}" autocomplete="off">
+      ${marcadas.length ? '<button type="button" class="chip" data-zn-limpar>Limpar marcadas</button>' : ''}
+    </div>
+    <div class="zn-tabela-wrap"><table class="zn-tabela">
+      <thead><tr>
+        ${th('zona', uf ? 'Zona · municípios' : 'Estado')}
+        ${th('eleitorado', 'Eleitorado', 'zn-n')}
+        ${th('lula', `${esc(curto(cands[0]))} 1º → 2º`)}
+        ${th('flavio', `${esc(curto(cands[1]))} 1º → 2º`)}
+        <th>Vantagem 1º → 2º</th>
+        ${th('movimento', 'Movimento')}
+        ${th('apurado', '2º apurado', 'zn-n')}
+      </tr></thead>
+      <tbody>${linhas.map(linhaHtml).join('') || '<tr><td colspan="7" class="vazio">Nada encontrado.</td></tr>'}</tbody>
+    </table></div>
+    <p class="zn-nota">Percentuais sobre os votos válidos de cada turno; "pp" = pontos percentuais. Uma zona eleitoral pode cobrir
+      vários municípios, e um município grande, várias zonas. 1º turno: resultado final do TSE. 2º turno: ao vivo.</p>`;
+  if (focoBusca) {
+    const b = $('#zn-busca');
+    b.focus();
+    b.setSelectionRange(b.value.length, b.value.length);
+  }
+}
+
+$('#zonas').addEventListener('click', ev => {
+  const t = ev.target.closest('[data-zn-ordem], [data-zn-voltar], [data-zn-limpar], [data-zn-linha]');
+  if (!t) return;
+  if (t.dataset.znOrdem) {
+    const col = t.dataset.znOrdem;
+    state.ordemZonas = { col, desc: state.ordemZonas.col === col ? !state.ordemZonas.desc : DESC_PADRAO[col] };
+    renderZonas();
+  } else if (t.hasAttribute('data-zn-voltar')) irZonas({ sel: null });
+  else if (t.hasAttribute('data-zn-limpar')) irZonas({ zonas: [] });
+  else if (!UFS[state.sel]) irZonas({ sel: t.dataset.znLinha });
+  else {
+    const id = t.dataset.znLinha;
+    irZonas({ zonas: state.zonas.includes(id) ? state.zonas.filter(z => z !== id) : [...state.zonas, id] });
+  }
+});
+$('#zonas').addEventListener('keydown', ev => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-zn-linha]')) { ev.preventDefault(); ev.target.click(); }
+});
+$('#zonas').addEventListener('change', ev => {
+  if (ev.target.id === 'zn-uf') irZonas({ sel: ev.target.value || null });
+});
+$('#zonas').addEventListener('input', ev => {
+  if (ev.target.id !== 'zn-busca') return;
+  state.busca = ev.target.value;
+  renderZonas();
+});
+
 /* ---------------- comparar 1º e 2º turno ---------------- */
 
 // Popup com as fichas dos dois turnos lado a lado, para o estado ou país aberto no painel. O turno que está
@@ -1778,6 +2079,11 @@ function irPara(mudancas) {
 
 // Volta um nível: cidade → país → continente → visão geral; presídio → estado; estado e soma → visão geral.
 function voltar() {
+  if (state.aba === 'zonas') {
+    if (state.zonas.length) irZonas({ zonas: [] });
+    else if (state.sel) irZonas({ sel: null });
+    return;
+  }
   const presidio = state.aba === 'presidios' ? listaPresidios?.find(x => x.id === state.sel) : null;
   if (presidio) selecionar(presidio.uf);
   else if (state.cidade) irPara({ cidade: null });
@@ -1803,6 +2109,7 @@ function trocarAba(aba) {
   state.continente = null;
   state.cidade = null;
   state.busca = '';
+  state.zonas = [];
   gravarHash();
   render();
   ativarAba(aba);
@@ -1810,6 +2117,7 @@ function trocarAba(aba) {
 
 // Liga a carga que a aba precisa (cidades do exterior, presídios) e reavalia o ciclo.
 function ativarAba(aba) {
+  if (aba === 'zonas') sincronizarZonas();
   if (aba === 'presidios' && !dados.querPresidios) {
     dados.querPresidios = true;
     reavaliar();
@@ -1935,6 +2243,7 @@ window.addEventListener('hashchange', () => {
     const ele = state.ele;
     state.ele = antes;
     trocarEleicao(ele);
+    ativarAba(state.aba);
     return;
   }
   if (mundo) mundo.enquadrado = undefined;
@@ -1954,3 +2263,4 @@ render();
 await Promise.all([montarMundo(), montarBrasil(), montarPresidios()]);
 aplicarCache();
 ciclo();
+if (state.aba === 'zonas') sincronizarZonas();
