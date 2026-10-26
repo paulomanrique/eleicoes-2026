@@ -68,6 +68,9 @@ No painel de um estado ou país, "Comparar 1º e 2º turno" abre as fichas dos d
 na tela usa o que já foi carregado; o outro vem do cache dele e só consulta o TSE pelo que falta (um arquivo
 por estado, um por cidade do país), respeitando o relógio. O 1º turno, encerrado, vem uma vez e fica guardado.
 
+Na busca do painel (abas Mapa e Brasil) e na aba Zonas, digitar 3 letras ou mais lista as cidades do Brasil que batem
+com o termo (nomes de `data/zonas.json`); clicar numa cidade abre o mesmo comparativo, com um arquivo do TSE por turno.
+
 ## Cidades com menos de 30 eleitores
 
 No exterior, a seção só é instalada onde há pelo menos 30 eleitores (Código Eleitoral, art. 226); no 1º turno,

@@ -551,3 +551,9 @@ tr.marcada .zn-check { background: var(--ink); border-color: var(--ink); color: 
 @media (max-width: 860px) {
   .zn-ag-grade { grid-template-columns: 1fr; }
 }
+
+/* ---------- busca de cidades ---------- */
+.linha.linha-cidade { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.linha-cmp { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.linha-cidade:hover .linha-cmp { color: var(--ink); }
+.zonas .cidades-busca { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; margin-bottom: 8px; }

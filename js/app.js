@@ -5,7 +5,7 @@ import {
 } from './tse.js';
 import { Cache } from './cache.js';
 import {
-  ELE_2T, LULA, FLAVIO, carregarZonas, zonasCarregadas, temZonas, sincronizarUF, ufPronta, segundoTurnoComVotos, zonasDaUF, nomeMun, total1UF, somarZonas, compactar,
+  ELE_2T, LULA, FLAVIO, carregarZonas, zonasCarregadas, temZonas, sincronizarUF, ufPronta, segundoTurnoComVotos, zonasDaUF, nomeMun, total1UF, somarZonas, compactar, buscarMunicipios,
 } from './zonas.js';
 import { COUNTRIES, CITIES, CONTINENTES, flagEmoji, continenteDaCidade, continenteDoPais, nomePaisNoContinente } from './exterior.js';
 import {
@@ -1440,6 +1440,25 @@ function lateralBrasil() {
   return painelGeral({ exterior: false });
 }
 
+// Cidades do Brasil que batem com a busca (a partir de 3 letras): clicar abre o comparativo entre os turnos.
+// Os nomes vêm de data/zonas.json, carregado na primeira busca.
+function municipiosHtml(busca, uf = null) {
+  if (normalizar(busca.trim()).length < 3) return '';
+  if (!zonasCarregadas()) {
+    carregarZonas().then(() => { renderLateral(); renderZonas(); }, err => console.warn(err));
+    return '<p class="vazio">Buscando cidades…</p>';
+  }
+  const achadas = buscarMunicipios(busca, { uf });
+  if (!achadas.length) return '';
+  return `<div class="lista-cab"><h3>Cidades · clique para comparar 1º e 2º turno</h3></div>
+    <ul class="linhas cidades-busca">${achadas.map(m => `
+      <li><button type="button" class="linha linha-cidade" data-cmp-mun="${m.uf}-${m.mun}">
+        <span class="linha-ic">${m.uf.toUpperCase()}</span>
+        <span class="linha-nome">${esc(m.nome)}<small>${fmt.format(m.eleitorado)} eleitores</small></span>
+        <span class="linha-cmp">Comparar →</span>
+      </button></li>`).join('')}</ul>`;
+}
+
 // Visão geral: o Brasil (regiões e estados) e o exterior (continentes e países), com uma busca para os dois.
 // Na aba Brasil, só a parte do Brasil.
 function painelGeral({ exterior = true } = {}) {
@@ -1454,9 +1473,10 @@ function painelGeral({ exterior = true } = {}) {
   const zz = dados.zz;
   const brasil = `${progressoHtml(dados.br)}
     ${botaoSomar()}
-    <input id="busca" class="busca" type="search" placeholder="Buscar estado${exterior ? ' ou país' : ''}…" value="${esc(state.busca)}" autocomplete="off">
+    <input id="busca" class="busca" type="search" placeholder="Buscar estado, cidade${exterior ? ' ou país' : ''}…" value="${esc(state.busca)}" autocomplete="off">
     ${termo ? '' : listaHtml('Por região', linhasRegioes())}
-    ${listaHtml(`Estados (${estados.length})`, estados)}`;
+    ${listaHtml(`Estados (${estados.length})`, estados)}
+    ${municipiosHtml(state.busca)}`;
   if (!exterior) {
     return `<div class="lat-cab"><div><h2 class="lat-titulo">Brasil</h2><p class="lat-sub">Clique num estado, no mapa ou na lista, para ver o resultado dele.</p></div></div>${brasil}`;
   }
@@ -1913,9 +1933,10 @@ function renderZonas() {
     </div>
     ${agregadoZonasHtml(titulo, sub, soma, cands)}
     <div class="zn-ferramentas">
-      <input id="zn-busca" class="busca" type="search" placeholder="${uf ? 'Buscar zona ou município…' : 'Buscar estado…'}" value="${esc(state.busca)}" autocomplete="off">
+      <input id="zn-busca" class="busca" type="search" placeholder="${uf ? 'Buscar zona ou cidade…' : 'Buscar estado ou cidade…'}" value="${esc(state.busca)}" autocomplete="off">
       ${marcadas.length ? '<button type="button" class="chip" data-zn-limpar>Limpar marcadas</button>' : ''}
     </div>
+    ${municipiosHtml(state.busca, uf)}
     <div class="zn-tabela-wrap"><table class="zn-tabela">
       <thead><tr>
         ${th('zona', uf ? 'Zona · municípios' : 'Estado')}
@@ -1991,12 +2012,18 @@ function baixarParaComparar(ele, cache, id, buscar) {
 }
 
 async function fichaDoTurno(ele, alvo) {
-  if (ele === dados.ele) return alvo.uf ? dados.ufs[alvo.uf] ?? null : resultadoCidades(alvo.cds);
+  if (ele === dados.ele && !alvo.mun) return alvo.uf ? dados.ufs[alvo.uf] ?? null : resultadoCidades(alvo.cds);
   const cache = Cache.da(ele);
   const d = ELEICOES[ele].data;
+  // Pelo relógio, onde a urna ainda não fechou não há o que baixar.
+  // Município (da busca de cidades): um arquivo por turno, nos dois turnos.
+  if (alvo.mun) {
+    const id = `mun:${alvo.uf}${alvo.mun}`;
+    if (urnasBrasil(d).estado === 'fechada') await baixarParaComparar(ele, cache, id, () => fetchResultado(ele, alvo.uf, alvo.mun));
+    return cache.get(id) ?? null;
+  }
   if (!cache.get('br')) await baixarParaComparar(ele, cache, 'br', () => fetchResultado(ele, 'br'));
   const modelo = cache.get('br');
-  // Pelo relógio, onde a urna ainda não fechou não há o que baixar.
   if (alvo.uf) {
     if (urnasBrasil(d).estado === 'fechada') await baixarParaComparar(ele, cache, alvo.uf, () => fetchResultado(ele, alvo.uf));
     return cache.get(alvo.uf) ?? null;
@@ -2025,12 +2052,14 @@ function fichaHtml(ele, f, antes = null) {
   return cab + progressoHtml(f.r) + candidatosHtml(f.r, ele, base) + statsHtml(f.r, base);
 }
 
-async function abrirComparacao() {
-  const uf = UFS[state.sel] ? state.sel : null;
-  const pais = COUNTRIES[state.sel] ? state.sel : null;
+// cidade: { uf, mun } de um município da busca; sem ela, o estado ou país aberto no painel.
+async function abrirComparacao(cidade = null) {
+  const uf = cidade?.uf ?? (UFS[state.sel] ? state.sel : null);
+  const pais = !cidade && COUNTRIES[state.sel] ? state.sel : null;
   if (!uf && !pais) return;
-  const alvo = uf ? { uf } : { cds: cidadesDoPais(pais, state.continente) };
-  const titulo = uf ? UFS[uf] : state.continente ? nomePaisNoContinente(pais, state.continente) : COUNTRIES[pais].nome;
+  const alvo = cidade ? { uf, mun: cidade.mun } : uf ? { uf } : { cds: cidadesDoPais(pais, state.continente) };
+  const titulo = cidade ? `${nomeMun(uf, cidade.mun)} · ${UFS[uf]}`
+    : uf ? UFS[uf] : state.continente ? nomePaisNoContinente(pais, state.continente) : COUNTRIES[pais].nome;
   const icone = uf ? `<span class="lat-uf">${uf.toUpperCase()}</span>` : `<span class="lat-bandeira">${flagEmoji(COUNTRIES[pais].iso2)}</span>`;
   const pedido = ++pedidoComparacao;
   const fichas = {};
@@ -2168,6 +2197,7 @@ document.addEventListener('click', ev => {
   if (t.hasAttribute('data-somar')) { state.somando = !state.somando; renderLateral(); return; }
   if (t.hasAttribute('data-limpar-soma')) { state.somando = false; selecionar(null); return; }
   if (t.hasAttribute('data-comparar')) { abrirComparacao(); return; }
+  if (t.dataset.cmpMun) { const [uf, mun] = t.dataset.cmpMun.split('-'); abrirComparacao({ uf, mun }); return; }
   if (t.dataset.ele) trocarEleicao(t.dataset.ele);
   else if (t.dataset.aba) trocarAba(t.dataset.aba);
   else if (t.hasAttribute('data-ordem')) { state.ordem = PROXIMA_ORDEM[t.dataset.ordem] ?? 'eleitorado'; renderLateral(); }

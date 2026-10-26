@@ -132,6 +132,30 @@ function guardarMun(c, mun, zonas, rs, ix) {
   };
 }
 
+/* ----- busca de municípios ----- */
+
+const normalizar = t => t.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+let indiceMun = null;
+
+// Municípios cujo nome contém o termo (em um estado só, se uf vier): primeiro os que começam com ele,
+// depois os de maior eleitorado.
+export function buscarMunicipios(termo, { uf = null, limite = 12 } = {}) {
+  const t = normalizar(termo);
+  if (!base || t.length < 3) return [];
+  if (!indiceMun) {
+    indiceMun = [];
+    for (const [u, dados] of Object.entries(base.ufs)) {
+      const el = {};
+      for (const [mun, , , , , , eleitorado] of dados.pecas) el[mun] = (el[mun] ?? 0) + eleitorado;
+      for (const [mun, nome] of Object.entries(dados.mun)) indiceMun.push({ uf: u, mun, nome, chave: normalizar(nome), eleitorado: el[mun] ?? 0 });
+    }
+  }
+  return indiceMun
+    .filter(m => (!uf || m.uf === uf) && m.chave.includes(t))
+    .sort((a, b) => b.chave.startsWith(t) - a.chave.startsWith(t) || b.eleitorado - a.eleitorado)
+    .slice(0, limite);
+}
+
 /* ----- agregados ----- */
 
 // Zonas de um estado: os municípios de cada uma e as somas dos dois turnos.
