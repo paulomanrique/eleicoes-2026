@@ -557,3 +557,28 @@ tr.marcada .zn-check { background: var(--ink); border-color: var(--ink); color: 
 .linha-cmp { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 .linha-cidade:hover .linha-cmp { color: var(--ink); }
 .zonas .cidades-busca { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; margin-bottom: 8px; }
+
+/* ---------- aba Colégio eleitoral ---------- */
+.colegio { margin-top: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.cl-duelo { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 16px; }
+.cl-cand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.cl-cand.dir { flex-direction: row-reverse; text-align: right; }
+.cl-num { display: flex; flex-direction: column; }
+.cl-cand.dir .cl-num { align-items: flex-end; }
+.cl-delegados { font: 700 clamp(34px, 5vw, 52px)/1 var(--serif); letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--cor); }
+.cl-eleito { font: 700 11px var(--sans); text-transform: uppercase; letter-spacing: .06em; color: var(--surface); background: var(--cor); border-radius: 4px; padding: 2px 6px; vertical-align: 3px; }
+.cl-meio { text-align: center; font: 700 22px/1 var(--serif); padding-bottom: 6px; font-variant-numeric: tabular-nums; }
+.cl-meio small { display: block; font: 500 11px var(--sans); color: var(--ink-3); text-transform: uppercase; letter-spacing: .08em; margin-top: 4px; }
+.cl-barra { position: relative; display: flex; gap: 1px; height: 26px; margin-top: 14px; border-radius: 4px; overflow: hidden; background: var(--surface); }
+.cl-seg { display: block; min-width: 2px; cursor: pointer; transition: filter .2s; }
+.cl-seg:hover, .cl-seg.sel { filter: brightness(.82); }
+.cl-metade { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--ink); transform: translateX(-1px); }
+.cl-veredito { margin: 12px 0 0; font-size: 15px; line-height: 1.45; }
+.cl-nota { margin: 6px 0 0; font-size: 12.5px; color: var(--ink-2); }
+.cl-regras { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+.cl-opcoes { display: flex; gap: 6px; flex-wrap: wrap; }
+.rotulo-delegados { font-weight: 500; }
+@media (max-width: 640px) {
+  .cl-duelo { grid-template-columns: 1fr 1fr; }
+  .cl-meio { grid-column: 1 / -1; grid-row: 2; }
+}

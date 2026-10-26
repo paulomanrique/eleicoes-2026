@@ -7,6 +7,7 @@ import { Cache } from './cache.js';
 import {
   ELE_2T, LULA, FLAVIO, carregarZonas, zonasCarregadas, temZonas, sincronizarUF, ufPronta, segundoTurnoComVotos, zonasDaUF, nomeMun, total1UF, somarZonas, compactar, buscarMunicipios,
 } from './zonas.js';
+import { DEPUTADOS, delegados, apurarColegio } from './colegio.js';
 import { COUNTRIES, CITIES, CONTINENTES, flagEmoji, continenteDaCidade, continenteDoPais, nomePaisNoContinente } from './exterior.js';
 import {
   urnasCidade, urnasCidades, urnasPais, urnasBrasil, resumoUrnas, horaBrasilia, faltam, fechamentoBrasil, definirSemVotacao, MINIMO_ELEITORES,
@@ -36,7 +37,7 @@ const dataEleicao = () => ELEICOES[state.ele].data;
 // multi: estados (e "zz", o exterior) somados com Ctrl/⌘ + clique; somando: o mesmo pelo clique simples (toque).
 const state = {
   ele: '6258', aba: 'mapa', sel: null, cidade: null, multi: [], somando: false, continente: null, ordem: null, busca: '',
-  zonas: [], ordemZonas: { col: 'zona', desc: false },
+  zonas: [], ordemZonas: { col: 'zona', desc: false }, senadores: 3,
 };
 
 const REGIOES = {
@@ -74,13 +75,15 @@ function lerHash() {
   if (aba === 'presidios') state.aba = 'presidios';
   else if (aba === 'brasil' || aba === 'estados') state.aba = 'brasil'; // estados: links antigos
   else if (aba === 'zonas') state.aba = 'zonas';
+  else if (aba === 'colegio') state.aba = 'colegio';
   else if (aba === 'mapa' || aba === 'exterior') state.aba = 'mapa'; // exterior: links antigos
   const sel = p.get('sel');
   state.sel = state.aba === 'mapa' ? de(UFS, sel) ?? de(COUNTRIES, sel)
-    : state.aba === 'brasil' || state.aba === 'zonas' ? de(UFS, sel)
+    : ['brasil', 'zonas', 'colegio'].includes(state.aba) ? de(UFS, sel)
     : de(UFS, sel) ?? (/^\d{5}-\d{1,4}-\d{1,4}$/.test(sel ?? '') ? sel : null);
   state.cidade = state.aba === 'mapa' ? de(CITIES, p.get('cidade')) : null;
-  const ufs = (p.get('ufs') || '').split(',').filter(uf => (uf === 'zz' && state.aba === 'mapa') || Object.hasOwn(UFS, uf));
+  const ufs = !['mapa', 'brasil'].includes(state.aba) ? [] : (p.get('ufs') || '').split(',').filter(uf => (uf === 'zz' && state.aba === 'mapa') || Object.hasOwn(UFS, uf));
+  state.senadores = p.get('sen') === '2' ? 2 : 3;
   state.multi = [...new Set(ufs)];
   state.continente = state.aba === 'mapa' ? de(CONTINENTES, p.get('cont')) : null;
   state.zonas = state.aba === 'zonas' && state.sel ? [...new Set((p.get('zn') || '').split(',').filter(z => /^\d{4}$/.test(z)))] : [];
@@ -93,6 +96,7 @@ function gravarHash() {
   if (state.multi.length) p.set('ufs', state.multi.join(','));
   if (state.continente) p.set('cont', state.continente);
   if (state.zonas.length) p.set('zn', state.zonas.join(','));
+  if (state.aba === 'colegio' && state.senadores !== 3) p.set('sen', state.senadores);
   history.replaceState(null, '', `#${p}`);
 }
 
@@ -696,6 +700,7 @@ function render() {
   pintarPresidios();
   renderLateral();
   renderZonas();
+  renderColegio();
 }
 
 function renderTopo() {
@@ -703,7 +708,8 @@ function renderTopo() {
   document.querySelectorAll('[data-ele]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ele === state.ele)));
   document.querySelectorAll('[data-aba]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === state.aba)));
   $('#mapa-mundo').hidden = state.aba !== 'mapa';
-  $('#mapa-brasil').hidden = state.aba !== 'brasil';
+  $('#mapa-brasil').hidden = state.aba !== 'brasil' && state.aba !== 'colegio';
+  $('#colegio').hidden = state.aba !== 'colegio';
   $('#mapa-presidios').hidden = state.aba !== 'presidios';
   $('.corpo').hidden = state.aba === 'zonas';
   $('#zonas').hidden = state.aba !== 'zonas';
@@ -841,6 +847,7 @@ function renderPlacar() {
 function renderLegenda() {
   const [a, b] = duelo();
   if (!a) { $('#legenda').innerHTML = ''; return; }
+  if (state.aba === 'colegio') { $('#legenda').innerHTML = legendaColegio(a, b); return; }
   const mid = css('--mid');
   const passos = c => INTENSIDADE.map(t => d3.interpolateLab(mid, corCand(c.n))(t));
   const esq = passos(a).reverse();
@@ -1077,14 +1084,17 @@ async function montarBrasil() {
     .attr('data-id', uf)
     .on('mouseenter mousemove', (ev, f) => mostrarTooltip(ev, {
       titulo: UFS[uf(f)], icone: `<span class="linha-ic">${uf(f).toUpperCase()}</span>`, r: dados.ufs[uf(f)], urnas: urnasBrasil(dataEleicao()),
+      extra: state.aba === 'colegio' ? `<div class="tt-sub" style="margin:6px 0 0">${delegados(uf(f), state.senadores)} delegados no colégio eleitoral</div>` : '',
     }))
     .on('mouseleave', esconderTooltip)
-    .on('click', (ev, f) => { if (somar_(ev)) alternarMulti(uf(f)); else selecionar(uf(f)); })
-    .on('contextmenu', (ev, f) => { if (ev.ctrlKey) { ev.preventDefault(); alternarMulti(uf(f)); } });
+    .on('click', (ev, f) => { if (state.aba === 'brasil' && somar_(ev)) alternarMulti(uf(f)); else selecionar(uf(f)); })
+    .on('contextmenu', (ev, f) => { if (state.aba === 'brasil' && ev.ctrlKey) { ev.preventDefault(); alternarMulti(uf(f)); } });
+  // Na aba Colégio, o rótulo leva também os delegados do estado, numa segunda linha.
   const rotulos = g.append('g').selectAll('text').data(fc.features).join('text')
     .attr('class', 'rotulo-uf')
-    .attr('transform', f => `translate(${path.centroid(f)})`)
-    .text(f => f.properties.sigla);
+    .attr('transform', f => `translate(${path.centroid(f)})`);
+  rotulos.append('tspan').attr('x', 0).text(f => f.properties.sigla);
+  rotulos.append('tspan').attr('class', 'rotulo-delegados').attr('x', 0).attr('dy', '1.05em');
 
   // Clicar num estado não mexe no zoom: o Brasil inteiro fica na tela. As siglas ficam do mesmo tamanho na tela em qualquer zoom.
   const zoom = d3.zoom().scaleExtent([1, 40]).translateExtent([[0, 0], [W, H]])
@@ -1097,25 +1107,29 @@ async function montarBrasil() {
   fundo.on('click', () => voltar());
 
   document.querySelectorAll('[data-zoom]').forEach(btn => btn.addEventListener('click', () => {
-    if (state.aba !== 'brasil') return;
+    if (state.aba !== 'brasil' && state.aba !== 'colegio') return;
     const acao = btn.dataset.zoom;
     if (acao === 'reset') { selecionar(null); svg.transition().duration(600).call(zoom.transform, d3.zoomIdentity); return; }
     svg.transition().duration(300).call(zoom.scaleBy, acao === 'in' ? 1.8 : 1 / 1.8);
   }));
 
-  mapaBrasil = { paths };
+  mapaBrasil = { paths, rotulos };
   pintarBrasil();
 }
 
 function pintarBrasil() {
   if (!mapaBrasil) return;
-  const naAba = state.aba === 'brasil';
+  const colegio = state.aba === 'colegio';
+  const naAba = state.aba === 'brasil' || colegio;
   const ufSel = naAba && UFS[state.sel] ? state.sel : null;
-  const multi = naAba ? state.multi.filter(u => UFS[u]) : [];
+  const multi = state.aba === 'brasil' ? state.multi.filter(u => UFS[u]) : [];
   const urnas = urnasBrasil(dataEleicao());
+  const sigla = f => f.properties.sigla.toLowerCase();
   mapaBrasil.paths
-    .style('fill', f => corRegiao(dados.ufs[f.properties.sigla.toLowerCase()], urnas))
-    .classed('sel', f => { const u = f.properties.sigla.toLowerCase(); return u === ufSel || multi.includes(u); });
+    .style('fill', f => (colegio ? corColegio(dados.ufs[sigla(f)], urnas) : corRegiao(dados.ufs[sigla(f)], urnas)))
+    .classed('sel', f => sigla(f) === ufSel || multi.includes(sigla(f)));
+  mapaBrasil.rotulos.select('.rotulo-delegados').text(f => (colegio ? delegados(sigla(f), state.senadores) : ''));
+  mapaBrasil.rotulos.attr('dy', colegio ? '-0.5em' : null);
 }
 
 /* ---------------- mapa dos presídios ---------------- */
@@ -1418,7 +1432,8 @@ function renderLateral() {
   if (chave !== chaveLateral) { chaveLateral = chave; el.scrollTop = 0; }
   if (!dados.br) { el.innerHTML = '<p class="vazio">Carregando resultados do TSE…</p>'; return; }
   const focoBusca = document.activeElement?.id === 'busca';
-  el.innerHTML = state.aba === 'presidios' ? lateralPresidios() : state.aba === 'brasil' ? lateralBrasil() : lateralMapa();
+  el.innerHTML = state.aba === 'presidios' ? lateralPresidios() : state.aba === 'brasil' ? lateralBrasil()
+    : state.aba === 'colegio' ? lateralColegio() : lateralMapa();
   if (focoBusca) {
     const b = $('#busca');
     b.focus();
@@ -1694,6 +1709,143 @@ function lateralPresidios() {
 }
 
 const normalizar = s => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+
+/* ---------------- aba Colégio eleitoral: simulação no modelo dos EUA ---------------- */
+
+// Os mesmos resultados por estado do TSE, contados como nos EUA: quem vence o estado leva todos os delegados.
+// Vale para o turno na tela (no 1º, vence o estado quem tem mais votos, mesmo sem maioria).
+const APERTADO = 5; // vitória por menos de 5 pontos: cor mais clara no mapa
+
+function corColegio(r, urnas = null) {
+  if (!r?.validos) return corRegiao(r, urnas);
+  const [p, s] = r.cands;
+  if (s && p.votos === s.votos) return css('--mid'); // empate: ninguém leva
+  const margem = (p.votos - (s?.votos ?? 0)) / r.validos * 100;
+  return margem < APERTADO ? d3.interpolateLab(css('--mid'), corCand(p.n))(0.5) : corCand(p.n);
+}
+
+function legendaColegio(a, b) {
+  const sw = cor => `<i style="display:inline-block;width:12px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:5px;background:${cor}"></i>`;
+  const claro = c => d3.interpolateLab(css('--mid'), corCand(c.n))(0.5);
+  return `<div class="legenda-titulo"><span>Quem leva o estado</span></div>
+    <div class="legenda-urnas">
+      <span>${sw(corCand(a.n))}${esc(a.nome)}</span><span>${sw(claro(a))}apertado</span>
+      <span>${sw(corCand(b.n))}${esc(b.nome)}</span><span>${sw(claro(b))}apertado</span>
+    </div>
+    <div class="legenda-sem"><i></i>sem votos apurados · número: delegados do estado · apertado: menos de ${APERTADO} pontos</div>`;
+}
+
+const candidatoDoBr = n => dados.br?.cands.find(c => c.n === n);
+
+function renderColegio() {
+  const el = $('#colegio');
+  if (state.aba !== 'colegio') return;
+  const [a, b] = duelo();
+  if (!a) { el.innerHTML = ''; return; }
+  const col = apurarColegio(dados.ufs, state.senadores);
+  const outros = [...col.porCand.keys()].filter(n => n !== a.n && n !== b.n);
+  const de = n => col.porCand.get(n) ?? { delegados: 0, estados: 0 };
+
+  const bloco = (n, lado) => {
+    const c = candidatoDoBr(n);
+    const d = de(n);
+    return `<div class="cl-cand ${lado}" style="--cor:${corCand(n)}">
+      ${fotoTag(state.ele, c)}
+      <div class="cl-num">
+        <span class="duelo-nome">${esc(c.nome)}${col.vencedor === n && encerrada() ? ' <b class="cl-eleito">eleito</b>' : ''}</span>
+        <span class="cl-delegados">${fmt.format(d.delegados)}</span>
+        <span class="duelo-votos">delegados · ${d.estados} ${d.estados === 1 ? 'estado' : 'estados'} · voto direto ${fmtPct(c.pct)}</span>
+      </div>
+    </div>`;
+  };
+
+  // A barra: os estados de cada candidato, dos mais folgados (nas pontas) aos mais apertados (no meio).
+  const segmento = e => {
+    const c = e.vencedor ? candidatoDoBr(e.vencedor) : null;
+    const dica = `${UFS[e.uf]} · ${e.n} delegados${c ? ` · ${c.nome} +${fmtNum1(e.margem)} pontos` : e.empate ? ' · empate' : ' · sem votos apurados'}`;
+    const cor = e.vencedor ? corColegio(e.r) : e.empate ? css('--mid') : css('--nodata');
+    return `<span class="cl-seg${e.uf === state.sel ? ' sel' : ''}" data-cl-uf="${e.uf}" style="flex:${e.n};background:${cor}" title="${esc(dica)}"></span>`;
+  };
+  const doCand = n => col.estados.filter(e => e.vencedor === n);
+  const barra = [
+    ...doCand(a.n).sort((x, y) => y.margem - x.margem),
+    ...outros.flatMap(n => doCand(n)),
+    ...col.estados.filter(e => !e.vencedor),
+    ...doCand(b.n).sort((x, y) => x.margem - y.margem),
+  ].map(segmento).join('');
+
+  // O voto direto (Brasil e exterior): quem mais votou contra quem leva o colégio.
+  const [p1] = dados.br.cands;
+  const final = encerrada();
+  const agora = final ? '' : 'Por enquanto, ';
+  let veredito;
+  if (!dados.br.validos) veredito = 'Aguardando a apuração: os delegados aparecem conforme os estados apuram.';
+  else if (col.vencedor) {
+    const v = candidatoDoBr(col.vencedor);
+    const atras = p1.votos - v.votos;
+    veredito = `${agora}<b>${esc(v.nome)}</b> ${final ? 'seria eleito' : 'venceria'} no colégio eleitoral, com <b>${fmt.format(de(col.vencedor).delegados)}</b> de ${fmt.format(col.total)} delegados`
+      + (atras > 0 ? `, <b>mesmo perdendo no voto direto</b> para ${esc(p1.nome)} por ${fmtNum1(atras / dados.br.validos * 100)} pontos (${fmt.format(atras)} votos).`
+        : atras === 0 && p1.n !== col.vencedor ? ', com o voto direto empatado.'
+        : '. O mesmo vencedor do voto direto.');
+    if (col.decisivo) {
+      const d = col.decisivo;
+      veredito += ` Estado decisivo: <b>${UFS[d.uf]}</b> (${d.n} delegados), onde a vitória foi por ${fmt.format(d.margemVotos)} votos (${fmtNum1(d.margem)} pontos).`;
+    }
+  } else if (!col.semVotos && !col.empatados && de(a.n).delegados === de(b.n).delegados && !outros.length) {
+    veredito = `${agora}empate em ${fmt.format(de(a.n).delegados)} delegados. Nos EUA, a Câmara decidiria, com um voto por bancada estadual.`;
+  } else if (!col.semVotos) {
+    veredito = `${agora}ninguém chega a ${fmt.format(col.maioria)} delegados${col.empatados ? ` (${fmt.format(col.empatados)} estão em estados empatados)` : ''}. Nos EUA, a Câmara escolheria entre os três mais votados no colégio, com um voto por bancada estadual.`;
+  } else {
+    veredito = `Ninguém chegou a ${fmt.format(col.maioria)} delegados ainda; ${fmt.format(col.semVotos)} estão em estados sem votos apurados.`;
+  }
+  const parcial = dados.br.validos && !encerrada() ? `<p class="cl-nota">Apuração em andamento (${fmtPct(pctApurado(dados.br), 1)} das seções): um estado apertado ainda pode virar.</p>` : '';
+
+  el.innerHTML = `
+    <div class="cl-duelo">
+      ${bloco(a.n, 'esq')}
+      <div class="cl-meio">${fmt.format(col.maioria)}<small>para vencer</small></div>
+      ${bloco(b.n, 'dir')}
+    </div>
+    <div class="cl-barra" role="img" aria-label="Delegados por estado">${barra}<i class="cl-metade"></i></div>
+    ${outros.length ? `<p class="cl-nota">Também levam estados: ${outros.map(n => `${esc(candidatoDoBr(n).nome)} (${de(n).delegados})`).join(', ')}.</p>` : ''}
+    <p class="cl-veredito">${veredito}</p>
+    ${parcial}
+    <div class="cl-regras">
+      <span>${fmt.format(col.total)} delegados: os 513 deputados federais e ${state.senadores} senadores por estado. Quem vence o estado leva todos.</span>
+      <span class="cl-opcoes" role="group" aria-label="Senadores por estado">
+        <button type="button" class="chip${state.senadores === 3 ? ' ligado' : ''}" data-cl-sen="3" aria-pressed="${state.senadores === 3}">3 senadores (como o Senado)</button>
+        <button type="button" class="chip${state.senadores === 2 ? ' ligado' : ''}" data-cl-sen="2" aria-pressed="${state.senadores === 2}">2 senadores (como nos EUA)</button>
+      </span>
+    </div>`;
+}
+
+function lateralColegio() {
+  if (state.sel && UFS[state.sel]) {
+    const uf = state.sel;
+    const n = delegados(uf, state.senadores);
+    const r = dados.ufs[uf];
+    const empate = r?.validos && r.cands[1] && r.cands[0].votos === r.cands[1].votos;
+    const v = r?.validos && !empate ? r.cands[0] : null;
+    return detalheHtml({
+      voltar: 'Colégio eleitoral', icone: `<span class="lat-uf">${uf.toUpperCase()}</span>`, titulo: UFS[uf],
+      sub: `${n} delegados (${DEPUTADOS[uf]} deputados + ${state.senadores} senadores)${v ? ` · todos para <b>${esc(v.nome)}</b>` : empate ? ' · empatado: ninguém leva' : ' · ainda sem votos apurados'}`,
+      r, urnas: urnasBrasil(dataEleicao()), comparar: true,
+    });
+  }
+  const linhas = Object.keys(DEPUTADOS).map(uf => ({
+    id: uf, tipo: 'uf', icone: uf.toUpperCase(), nome: UFS[uf], nota: String(delegados(uf, state.senadores)), r: dados.ufs[uf],
+  }));
+  return `<div class="lat-cab"><div><h2 class="lat-titulo">Colégio eleitoral</h2>
+      <p class="lat-sub">Simulação: os votos de verdade de cada estado, contados como nos EUA. Cada estado tem um delegado por deputado federal e por senador, e quem vence o estado leva todos. O exterior fica de fora: lá, só estados têm delegados.</p></div></div>
+    ${listaHtml('Estados · delegados ao lado do nome', linhas)}`;
+}
+
+$('#colegio').addEventListener('click', ev => {
+  const t = ev.target.closest('[data-cl-sen], [data-cl-uf]');
+  if (!t) return;
+  if (t.dataset.clSen) { state.senadores = Number(t.dataset.clSen); gravarHash(); render(); }
+  else selecionar(t.dataset.clUf);
+});
 
 /* ---------------- aba Zonas: Lula e Flávio do 1º para o 2º turno ---------------- */
 
@@ -2171,13 +2323,13 @@ function trocarEleicao(ele) {
 }
 
 function realcar(id, ligado) {
-  const svgSel = { presidios: '#mapa-presidios', brasil: '#mapa-brasil' }[state.aba] ?? '#mapa-mundo';
+  const svgSel = { presidios: '#mapa-presidios', brasil: '#mapa-brasil', colegio: '#mapa-brasil' }[state.aba] ?? '#mapa-mundo';
   document.querySelectorAll(`${svgSel} [data-id="${CSS.escape(id)}"]`).forEach(n => n.classList.toggle('sel', ligado || n.dataset.id === state.sel || state.multi.includes(n.dataset.id)));
 }
 
 // Ctrl/⌘ + clique (ou modo soma) numa linha de estado, região ou do exterior: entra/sai da soma.
 function cliqueDeSoma(ev, t) {
-  if (state.aba === 'presidios' || !somar_(ev)) return false;
+  if ((state.aba !== 'mapa' && state.aba !== 'brasil') || !somar_(ev)) return false;
   const id = t.dataset.tipo === 'uf' ? t.dataset.ir : t.dataset.tipo === 'regiao' ? REGIOES[t.dataset.ir]?.ufs : null;
   if (!id) return false;
   ev.preventDefault();

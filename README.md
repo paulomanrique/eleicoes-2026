@@ -14,6 +14,7 @@ python3 -m http.server 8765   # depois abra http://localhost:8765
   só com regiões e estados.
 - **Presídios**: as seções especiais, num mapa à parte.
 - **Zonas**: Lula e Flávio Bolsonaro do 1º para o 2º turno, por zona eleitoral (abaixo).
+- **Colégio eleitoral**: simulação do modelo dos EUA com os votos reais de cada estado (abaixo).
 - Turno na URL: `#e=6258` (2º turno) ou `#e=6257` (1º turno). Seleção também vai na URL.
 ## Consultas ao TSE (para não tomar 429)
 
@@ -92,3 +93,11 @@ ou município).
 - **2º turno**, ao vivo, só do estado aberto: o índice do estado (`<uf>-e006258-ab.json`) diz quais municípios
   mudaram, e só eles são baixados, a cada 3 minutos enquanto o estado não estiver todo apurado. Os pedaços ficam no
   `localStorage` (`tse-zonas-v1:<uf>`) só com os números que a aba usa.
+
+## Colégio eleitoral (simulação)
+
+E se o Brasil escolhesse o presidente como os EUA? Cada estado (e o DF) tem um delegado por deputado federal e por
+senador, e quem tem mais votos no estado leva todos os delegados dele; vence quem passar da metade. Deputados: a
+distribuição em vigor (513 cadeiras), que o STF manteve para 2026. Por padrão são os 3 senadores de cada estado
+(594 delegados, 298 para vencer); um botão troca para 2, como nos EUA (567, 284). O exterior fica de fora, e estado
+empatado não dá delegados a ninguém. A conta está em `js/colegio.js` e usa o turno que estiver na tela.
